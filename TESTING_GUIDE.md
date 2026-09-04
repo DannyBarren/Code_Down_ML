@@ -39,6 +39,7 @@ What's covered:
 | Review/export | `tests/test_review_and_export.py` | apply reviews, CSV/Excel exports |
 | Rules / codes | `tests/test_rules_manager.py`, `tests/test_account_codes.py` | matching, suffix normalization |
 | **Spreadsheet helpers** | `tests/test_spreadsheet_helpers.py` | `work_df` build, Rule-Notes folding + persistence, runs, manual edits, bulk approve, rule preview, filters, pagination, undo/redo |
+| **Production hardening** | `tests/test_production_hardening.py` | keyword source order (never Notes), honest rule previews, token-aware fuzzy, seed-disagreement → review, reject-never-learns, group approve blanks-only, bulk-recode protection, client isolation + migration, learned-memory mode, strict-mode purity, reset/export regression locks |
 | **UI e2e** | `tests/test_e2e_v22.py` | headless `AppTest`: landing → load sample → spreadsheet → full run → filters/pagination → modal panels → export modal → undo |
 
 > `tests/test_e2e_v22.py` and the bootstrap honour `FILLDOWN_DB_PATH`, so tests
@@ -56,28 +57,45 @@ Launch with `streamlit run main.py`. Tip: use a clean DB with
 
 ### Happy path
 1. **Landing** → enter a client name → **Load sample data & start**. ✅ App opens
-   directly in the spreadsheet; metrics + progress bar populate.
-2. Click **🚀 Full Intelligent Run**. ✅ Codes fill in; **Confidence** bars and
-   **How decided** appear; toast/flash summarises the run.
-3. **View → Review only**. ✅ Only flagged rows show. Edit a **Target Account**
-   cell (e.g. `6100 a`). ✅ It normalises to `6100A` on commit.
-4. Tick a few **✓** boxes → **Approve Selected**. ✅ Rows resolve; "Examples"
-   metric rises (the tool learned them).
-5. **✨ Create Rule from Selection** (select a vendor's rows first). ✅ Keyword +
-   Rule Notes pre-fill; **Rows affected** preview updates live; *Create rule &
-   apply* fills matching rows and persists the rule.
-6. **📤 Export** (toolbar). ✅ A modal opens *over* the grid; three downloads
-   build; open the Excel — original formatting kept + a **Code Down Summary**
-   tab; the exported CSV has no `_`-prefixed columns. Closing returns to the
-   spreadsheet.
-7. **⚙️ Rules / 🧠 Models / 🕘 History** (sidebar). ✅ Each opens as a **modal**;
-   the spreadsheet stays visible underneath and is never replaced.
-8. **Suggested rules (seeding workflow).** Code a few blank rows by typing a
+   directly in the spreadsheet; metrics + progress bar populate. A banner
+   offers to ingest the coded example rows as exact rules.
+2. Click **Run Rules — Strict ★** (the recommended button). ✅ Only blank rows
+   fill, only with your rules' codes; the audit panel shows protected / filled
+   / still-blank plus near-miss suggestions; the grid filter jumps to the
+   rule-filled rows.
+3. Click **Rules + Memory**. ✅ Deterministic: rules, then exact matches you
+   approved before. No similarity, no AI.
+4. Click **Full Intelligent Run**. ✅ Codes fill in; **Confidence** bars and
+   **How decided** appear; rows whose nearest seeds disagree land in review
+   instead of being silently filled.
+5. **Review workspace** (sidebar → Review). ✅ Only flagged rows, least
+   confident first. Similarity groups show "Group #n · rows · suggested code";
+   one click approves a consensus group (split groups refuse). Bulk bar:
+   approve all visible, approve ≥ confidence slider, apply suggested / recode
+   / reject selected. Editing codes + ticking Approve, then one **Apply
+   approved** click, batches the whole table.
+6. Tick a few **✓** boxes in the grid → **Approve Selected**. ✅ Rows resolve;
+   a toast reports "Approved N · learned N · queued for next model train".
+7. **✨ Create Rule from Selection** (select a vendor's rows first). ✅ Keyword +
+   Rule Notes pre-fill; the live preview shows *blank* fills vs already-coded
+   matches separately; a rule that fills 0 blank rows needs explicit
+   confirmation to save.
+8. **📤 Export** (toolbar). ✅ A modal opens *over* the grid; three downloads
+   build with client + date in the filenames; open the Excel — original
+   formatting kept + a **Code Down Summary** tab (run mode, per-engine counts,
+   timestamp); the exported CSV has no `_`-prefixed columns.
+9. **⚙️ Rules / 🧠 Models / 🕘 History** (sidebar). ✅ Each opens as a **modal**;
+   the spreadsheet stays visible underneath and is never replaced. The Models
+   modal hosts the **memory inspector** (mappings, examples, last train,
+   accuracy, delete-a-mapping) and the **train reminder** banner after 25 new
+   approvals.
+10. **Suggested rules (seeding workflow).** Code a few blank rows by typing a
    Target Account. ✅ A **💡 banner** appears ("turn coded rows into N rules").
    Open **⚙️ Rules** → the **Suggested rules** table lists keyword → code with a
    "rows it would fill" count. Tick some → **Create selected rule(s)**. ✅ Rules
-   are created; running them fills the look-alike rows.
-9. **Engine status.** Sidebar **🧩 Engine status** shows three lines —
+   are created; running them fills the look-alike rows. Suggestions are mined
+   from Name → Memo → Description — never from Notes.
+11. **Engine status.** Sidebar **🧩 Engine status** shows three lines —
    **Core / Semantic / SetFit** — with **⬇️ Install missing AI engines** when any
    optional engine is absent. ✅ The terminal prints a startup banner listing
    exactly what loaded.
@@ -109,12 +127,15 @@ browser open on the dashboard, sidebar visible.
 2. **Land + load (20s).** Type a client name → **Load sample data & start**.
    "One screen — a real spreadsheet. 220 transactions, a few already coded as
    examples."
-3. **One click (30s).** **🚀 Full Intelligent Run**. "It grouped look-alike
+3. **One click (30s).** **Run Rules — Strict ★**. "Deterministic — only my
+   rules, only blank rows, and the audit shows exactly which rule filled which
+   row." Then **Full Intelligent Run** for the rest: "It grouped look-alike
    transactions and filled the **Target Account** codes — with a confidence bar
    and a plain-English reason on every row."
-4. **Stay in control (45s).** **View → Review only**. "It only asks about what
-   it's unsure of." Fix one code by typing it; tick two more → **Approve
-   Selected**. "Notice 'Examples learned' just went up — it's getting smarter."
+4. **Stay in control (45s).** Sidebar → **Review**. "It only asks about what
+   it's unsure of — least confident first, grouped." Approve a whole group in
+   one click; fix one code by typing it. "Notice 'Examples learned' just went
+   up — it's getting smarter."
 5. **Teach a rule (45s).** Select a vendor's rows → **✨ Create Rule from
    Selection**. "Pre-filled keyword, and a **live preview**: this rule will
    touch *N* rows." Save. "That rule is now permanent for every future file."
@@ -127,5 +148,5 @@ browser open on the dashboard, sidebar visible.
    AI model trains on your approvals and takes over as confidence grows. You are
    always in control."
 
-**If asked about reliability:** "73 automated tests, including a headless run of
-the real UI, plus an end-to-end smoke test — all green."
+**If asked about reliability:** "190+ automated tests, including a headless run
+of the real UI, plus an end-to-end smoke test — all green."
