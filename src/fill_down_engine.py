@@ -80,12 +80,18 @@ class FillDownEngine:
         learned_lookup: Optional[Dict[str, str]] = None,
         model_manager=None,
         mode: Optional[str] = None,
+        client_id: Optional[str] = None,
+        blocked_lookup: Optional[Dict[str, set]] = None,
     ):
         self.config = config
         self.rules = rules_manager
         self.learned_lookup = learned_lookup or {}
         self.model_manager = model_manager
         self.mode = mode  # raw user choice; None -> config.ml.mode
+        self.client_id = client_id
+        # signature -> set of account codes the user has rejected for it.
+        self.blocked_lookup = blocked_lookup or {}
+        self._insight_cache: Dict[str, str] = {}
 
     # --------------------------------------------------------- mode resolve
     def _effective_mode(self) -> str:
@@ -177,18 +183,39 @@ class FillDownEngine:
             if match:
                 code = normalize_code(match.account_code)
                 df.iat[i, na_loc] = code
+                rationale = f"Matched rule '{match.rule.keyword}' -> {code}."
+                # Surface rule-vs-memory conflicts: the rule still wins (cascade
+                # order), but the user deserves to see the disagreement.
+                remembered = self.learned_lookup.get(text)
+                if remembered:
+                    remembered_code = normalize_code(remembered)
+                    if remembered_code and remembered_code != code:
+                        rationale += (f" Learned memory had '{remembered_code}' "
+                                      "— your rule takes precedence.")
                 results.append(FillResult(
                     row_index=i, original_value="", proposed_value=code,
                     confidence=self.config.confidence.rule_match_confidence,
                     source=FillSource.RULE, engine_used="rules",
                     action=FillAction.AUTO_FILLED, group_id=group_id,
-                    rationale=f"Matched rule '{match.rule.keyword}' -> {code}.",
+                    rationale=rationale,
                 ))
                 continue
 
-            # 3) Learned mapping (exact signature).
+            # 3) Learned mapping (exact signature) — unless the user rejected
+            #    this exact text -> code pairing before.
             if text in self.learned_lookup:
                 code = normalize_code(self.learned_lookup[text])
+                if code in self.blocked_lookup.get(text, set()):
+                    results.append(FillResult(
+                        row_index=i, original_value="", proposed_value=None,
+                        confidence=0.0, source=FillSource.NONE,
+                        engine_used="none", action=FillAction.NEEDS_REVIEW,
+                        group_id=group_id,
+                        rationale=(f"You previously rejected '{code}' for this "
+                                   "exact transaction — please choose the "
+                                   "right code."),
+                    ))
+                    continue
                 df.iat[i, na_loc] = code
                 results.append(FillResult(
                     row_index=i, original_value="", proposed_value=code,
@@ -201,7 +228,8 @@ class FillDownEngine:
 
             # 4/5) Similarity decision, optionally overridden by ML.
             sim_res = self._similarity_decision(
-                i, sim_to_seeds, seed_indices, seed_codes, group_id)
+                i, sim_to_seeds, seed_indices, seed_codes, group_id,
+                text=text)
             decision = self._combine_with_ml(
                 sim_res, ml_predictions.get(i), effective_mode, group_id)
 
@@ -264,6 +292,41 @@ class FillDownEngine:
         return _summary(results)
 
     # ------------------------------------------------------- similarity step
+    def _account_context(self, code: str) -> str:
+        """Short learned/glossary context for a code, cached per run.
+
+        Powers rationales like "looks like 6322 Call Center Services — learned
+        patterns for 6322: cunningham, call center (seen in 18 approved rows)".
+        Best-effort: empty string when nothing is known.
+        """
+        code = (code or "").strip()
+        if not code:
+            return ""
+        if code in self._insight_cache:
+            return self._insight_cache[code]
+        parts: List[str] = []
+        try:
+            entry = self.config.glossary_entry(code)
+            name = str(entry.get("name", "")).strip() if entry else ""
+            if name:
+                parts.append(name)
+        except Exception:  # noqa: BLE001 - glossary is best-effort
+            pass
+        try:
+            insight = self.rules.account_insight(code, self.client_id)
+            if insight:
+                parts.append(insight)
+            prof = self.rules.get_account_profile(code, self.client_id)
+            usage = int(prof.get("usage_count", 0)) if prof else 0
+            if usage:
+                parts.append(f"seen in {usage} approved row"
+                             f"{'s' if usage != 1 else ''}")
+        except Exception:  # noqa: BLE001 - learning context is best-effort
+            pass
+        note = " — ".join(parts)
+        self._insight_cache[code] = note
+        return note
+
     def _similarity_decision(
         self,
         i: int,
@@ -271,6 +334,7 @@ class FillDownEngine:
         seed_indices: np.ndarray,
         seed_codes: Dict[int, str],
         group_id: Optional[int],
+        text: str = "",
     ) -> FillResult:
         conf_cfg = self.config.confidence
         thr = self.config.similarity.similarity_threshold
@@ -294,6 +358,7 @@ class FillDownEngine:
             codes = [seed_codes[int(seed_indices[p])] for p in similar_pos]
             agreement = codes.count(proposed) / len(codes)
         else:
+            codes = [proposed]
             agreement = 1.0
 
         confidence = float(np.clip(best_sim * (0.6 + 0.4 * agreement), 0.0, 1.0))
@@ -301,6 +366,49 @@ class FillDownEngine:
             f"Most similar seed (cos={best_sim:.2f}) is '{proposed}'. "
             f"Agreement among {len(similar_pos)} similar seeds: {agreement:.0%}."
         )
+        context = self._account_context(proposed)
+        if context:
+            rationale += f" Looks like {context}."
+
+        # A pairing the user explicitly rejected must not come back as a fill.
+        if text and proposed in self.blocked_lookup.get(text, set()):
+            return FillResult(
+                row_index=i, original_value="", proposed_value=proposed,
+                confidence=confidence, source=FillSource.SIMILARITY,
+                engine_used="similarity", action=FillAction.NEEDS_REVIEW,
+                group_id=group_id,
+                rationale=(f"Similar rows suggest '{proposed}', but you "
+                           "rejected that pairing before — please choose the "
+                           "right code."),
+            )
+
+        # Seed disagreement: when the nearest seeds vote for *different*
+        # accounts, never auto-fill — send to review with the vote split.
+        distinct = sorted(set(codes))
+        if len(distinct) >= 2:
+            from collections import Counter
+            votes = Counter(codes)
+            split = ", ".join(f"{c} ×{n}" for c, n in votes.most_common())
+            split_note = (f"Nearest seeds disagree ({split}). ")
+            if agreement < 0.5:
+                return FillResult(
+                    row_index=i, original_value="", proposed_value=proposed,
+                    confidence=confidence, source=FillSource.SIMILARITY,
+                    engine_used="similarity", action=FillAction.NEEDS_REVIEW,
+                    group_id=group_id,
+                    rationale=(split_note + rationale +
+                               " Not auto-filled — please review."),
+                )
+            if agreement < 0.75 and confidence >= conf_cfg.auto_apply_cutoff:
+                # Weak majority: fill, but always flag for review.
+                return FillResult(
+                    row_index=i, original_value="", proposed_value=proposed,
+                    confidence=confidence, source=FillSource.SIMILARITY,
+                    engine_used="similarity", action=FillAction.FILLED_REVIEW,
+                    group_id=group_id,
+                    rationale=(split_note + rationale +
+                               " Weak majority — flagged for review."),
+                )
 
         if confidence >= conf_cfg.auto_apply_cutoff:
             action = FillAction.AUTO_FILLED

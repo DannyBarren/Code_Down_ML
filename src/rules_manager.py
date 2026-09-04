@@ -126,6 +126,87 @@ class RuleMatch:
     rule: KeywordRule
 
 
+def near_miss_suggestions(
+    results: List[RuleRunResult],
+    df: pd.DataFrame,
+    rules: List[KeywordRule],
+    text_columns: Optional[List[str]] = None,
+    min_overlap: float = 0.5,
+    max_suggestions: int = 10,
+) -> List[dict]:
+    """Surface "near misses" after a strict rule run — never auto-fills.
+
+    For every blank row where no rule fired, find the enabled rule whose
+    phrases have the highest token overlap with the row's text. When at least
+    ``min_overlap`` of a phrase's tokens are present (but the rule did not
+    match), the row is evidence the rule is *almost* right — e.g. a spelling
+    variant or a missing phrase. Returns one suggestion per rule, with the
+    affected row indices and the most common row tokens the rule is missing,
+    so the user can decide to widen the rule. Pure and deterministic.
+    """
+    active = [r for r in rules if r.enabled]
+    if not active:
+        return []
+
+    # Pre-compute each rule's phrase token sets.
+    rule_phrases: List[tuple] = []
+    for rule in active:
+        for phrase in rule.match_phrases():
+            toks = set(_norm_space(phrase).split())
+            toks = {t for t in toks if t and not t.isdigit()}
+            if toks:
+                rule_phrases.append((rule, phrase, toks))
+    if not rule_phrases:
+        return []
+
+    best_per_row: dict = {}  # row_index -> (overlap, rule, missing_tokens)
+    for r in results:
+        if r.status != "no_rule_match":
+            continue
+        try:
+            row = df.iloc[r.row_index]
+        except (IndexError, KeyError):
+            continue
+        text = RulesManager.build_match_text(row, text_columns)
+        row_toks = [t for t in _norm_space(text).split()
+                    if t and not t.isdigit() and t not in _KEYWORD_STOPWORDS]
+        if not row_toks:
+            continue
+        row_tok_set = set(row_toks)
+        for rule, _phrase, ptoks in rule_phrases:
+            overlap = len(ptoks & row_tok_set) / len(ptoks)
+            if overlap < min_overlap:
+                continue
+            missing = [t for t in row_toks if t not in ptoks]
+            cur = best_per_row.get(r.row_index)
+            if cur is None or overlap > cur[0]:
+                best_per_row[r.row_index] = (overlap, rule, missing)
+
+    # Aggregate by rule: which rows nearly matched it, and which tokens recur.
+    by_rule: dict = {}
+    for row_idx, (overlap, rule, missing) in best_per_row.items():
+        entry = by_rule.setdefault(
+            rule.id,
+            {"rule_id": rule.id, "rule_keyword": rule.keyword,
+             "account_code": rule.account_code, "rows": [],
+             "overlap": 0.0, "token_counts": {}})
+        entry["rows"].append(row_idx)
+        entry["overlap"] = max(entry["overlap"], overlap)
+        for tok in missing[:6]:
+            entry["token_counts"][tok] = entry["token_counts"].get(tok, 0) + 1
+
+    out: List[dict] = []
+    for entry in by_rule.values():
+        common = sorted(entry.pop("token_counts").items(),
+                        key=lambda kv: (-kv[1], kv[0]))
+        entry["suggested_tokens"] = [t for t, _ in common[:4]]
+        entry["rows"] = sorted(entry["rows"])
+        entry["overlap"] = round(float(entry["overlap"]), 3)
+        out.append(entry)
+    out.sort(key=lambda e: (-len(e["rows"]), -e["overlap"], e["rule_keyword"]))
+    return out[:max_suggestions]
+
+
 def get_rule_application_summary(results: List[RuleRunResult]) -> dict:
     """Summarise a rule run: protected vs filled vs left-blank + success rate.
 
@@ -313,18 +394,35 @@ class RulesManager:
     @staticmethod
     def _fuzzy_contains(cand_space: str, key_space: str,
                         cutoff: float = _FUZZY_CUTOFF) -> bool:
-        """True if a window of the candidate ~matches the keyword (typo-tolerant)."""
+        """Token-aware, typo-tolerant match of the keyword against a fragment.
+
+        Compares the keyword against **whole tokens** (or same-width token
+        windows) of the candidate — never substrings — so a vendor rule like
+        "Shaw Media" fires on the misspelling "Shaw Medai" but does *not* fire
+        on an address token that merely contains the same letters ("shaw" in
+        "123 Shawnee Dr"). Multi-word phrases slide a window of the same token
+        width across the candidate.
+        """
         if not key_space or not cand_space:
             return False
-        if key_space in cand_space:
-            return True
         ktokens = key_space.split()
         ctokens = cand_space.split()
         if not ktokens or not ctokens:
             return False
+
+        if len(ktokens) == 1:
+            key = ktokens[0]
+            return any(
+                difflib.SequenceMatcher(None, key, tok).ratio() >= cutoff
+                for tok in ctokens
+            )
+
         width = len(ktokens)
-        last = max(1, len(ctokens) - width + 1)
-        for start in range(last):
+        if len(ctokens) < width:
+            # Candidate shorter than the phrase: compare the whole fragment.
+            return difflib.SequenceMatcher(None, key_space, cand_space).ratio() \
+                >= cutoff
+        for start in range(len(ctokens) - width + 1):
             window = " ".join(ctokens[start:start + width])
             if difflib.SequenceMatcher(None, key_space, window).ratio() >= cutoff:
                 return True

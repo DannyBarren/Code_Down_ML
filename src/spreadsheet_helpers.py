@@ -583,33 +583,94 @@ def rule_preview(work_df: pd.DataFrame, keyword: str, match_type: str,
                  case_sensitive: bool, fields: List[str], loaded: LoadedData,
                  config: Config, sample: int = 8) -> Tuple[int, pd.DataFrame]:
     """Count and sample the rows a prospective rule would match (live preview)."""
+    detail = rule_preview_detail(work_df, keyword, match_type, case_sensitive,
+                                 fields, loaded, config, sample=sample)
+    return int(detail["total"]), detail["samples"]
+
+
+def rule_preview_detail(work_df: pd.DataFrame, keyword: str, match_type: str,
+                        case_sensitive: bool, fields: List[str],
+                        loaded: LoadedData, config: Config,
+                        sample: int = 5) -> Dict[str, object]:
+    """Full live-preview payload for a prospective rule.
+
+    Returns ``total`` matches split into ``blank_matches`` (rows the rule would
+    actually **fill**) and ``protected_matches`` (already-coded rows it matches
+    but will **never** overwrite), plus up to ``sample`` example hits. This is
+    the honest preview an accountant needs before saving a rule.
+    """
+    empty = {"total": 0, "blank_matches": 0, "protected_matches": 0,
+             "samples": pd.DataFrame()}
     keyword = (keyword or "").strip()
     if not keyword:
-        return 0, pd.DataFrame()
+        return empty
     recompute_sim_text(work_df, loaded.text_columns, config)
     try:
         rule = KeywordRule(keyword=keyword, account_code="0",
                            match_type=match_type, case_sensitive=case_sensitive,
                            fields=list(fields or []))
     except Exception:  # noqa: BLE001 - invalid keyword/code -> no matches
-        return 0, pd.DataFrame()
+        return empty
 
+    na_col = loaded.new_account_col
     sim = work_df[SIM_TEXT_COL].tolist()
     matched_idx: List[int] = []
+    blank = 0
+    protected = 0
     for i in range(len(work_df)):
         if RulesManager._rule_matches(rule, sim[i], work_df.iloc[i]):
             matched_idx.append(i)
+            if str(work_df.iloc[i][na_col] or "").strip():
+                protected += 1
+            else:
+                blank += 1
 
     text_cols = [c for c in loaded.text_columns if c in work_df.columns]
-    show = text_cols + [loaded.new_account_col]
+    show = text_cols + [na_col]
     sample_df = work_df.iloc[matched_idx[:sample]][show].copy() \
         if matched_idx else pd.DataFrame(columns=show)
-    return len(matched_idx), sample_df
+    return {"total": len(matched_idx), "blank_matches": blank,
+            "protected_matches": protected, "samples": sample_df}
 
 
-# Logical columns users expect to keyword-match against, vendor-first so
-# the default keyword favours the vendor name over a generic memo.
-_RULE_COLUMN_CANDIDATES = ("Name", "Payee", "Vendor", "Description", "Memo")
+# Logical columns users expect to keyword-match against, in preference order.
+# The vendor name is the most distinctive signal on real ledgers, so Name
+# leads, then Memo, then Description. Never mined: Notes / Rule Notes (internal
+# coach notes must not leak into rule keywords).
+_RULE_COLUMN_CANDIDATES = ("Name", "Memo", "Description", "Payee", "Vendor",
+                           "Split", "Account", "Category")
+
+# Fallback preference order / exclusions when no config is supplied (mirrors
+# the defaults in config.yaml so tests and headless callers behave the same).
+_DEFAULT_KEYWORD_SOURCE = ["Name", "Memo", "Description", "Payee", "Split",
+                           "Account", "Category"]
+_DEFAULT_KEYWORD_EXCLUDE = {"notes", "note", "internal notes", "rule notes"}
+
+
+def _keyword_source_prefs(config: Optional[Config]) -> Tuple[List[str], set]:
+    """(preference order, excluded header set) for keyword mining."""
+    if config is None:
+        return list(_DEFAULT_KEYWORD_SOURCE), set(_DEFAULT_KEYWORD_EXCLUDE)
+    try:
+        return (list(config.keyword_source_order()),
+                set(config.keyword_source_excluded()))
+    except AttributeError:  # older Config without the new keys
+        return list(_DEFAULT_KEYWORD_SOURCE), set(_DEFAULT_KEYWORD_EXCLUDE)
+
+
+def _is_note_column(header: str, config: Optional[Config]) -> bool:
+    """True when a column must never feed keyword suggestions.
+
+    Excludes the configured names (Notes / Note / Internal Notes / Rule Notes)
+    and *any* header containing "note" — unless the user explicitly opted the
+    column in by listing it in ``columns.keyword_source``.
+    """
+    order, excluded = _keyword_source_prefs(config)
+    name = str(header).strip().lower()
+    opted_in = name in {str(c).strip().lower() for c in order}
+    if opted_in:
+        return False
+    return name in excluded or "note" in name
 
 
 def _column_has_text(work_df: pd.DataFrame, col: str, sample: int = 40) -> bool:
@@ -633,19 +694,25 @@ def _column_has_text(work_df: pd.DataFrame, col: str, sample: int = 40) -> bool:
     return checked > 0 and (hits / checked) >= 0.2
 
 
-def rule_keyword_columns(work_df: pd.DataFrame, loaded: LoadedData) -> List[str]:
-    """Text columns to mine for rule keywords, vendor-first.
+def rule_keyword_columns(work_df: pd.DataFrame, loaded: LoadedData,
+                         config: Optional[Config] = None) -> List[str]:
+    """Text columns to mine for rule keywords, in keyword-source order.
 
-    Resolves Name / Payee / Description / Memo (and similar) and drops columns
-    that are essentially numeric/date (e.g. Amount, Date) so the keyword picker
-    only ever offers useful, text-bearing columns.
+    Resolves the configured ``columns.keyword_source`` preference order
+    (Name → Memo → Description → Payee → …) against the actual headers and
+    drops columns that are essentially numeric/date (e.g. Amount, Date) so the
+    keyword picker only ever offers useful, text-bearing columns. Note-like
+    columns (Notes, Rule Notes, anything with "note" in the header) are never
+    offered unless the user explicitly opted them in.
     """
-    available = [c for c in mining_columns(work_df, loaded)
+    available = [c for c in mining_columns(work_df, loaded, config)
                  if _column_has_text(work_df, c)]
     norm = {c.strip().lower(): c for c in available}
+    order, _ = _keyword_source_prefs(config)
     out: List[str] = []
-    for cand in _RULE_COLUMN_CANDIDATES:
-        col = norm.get(cand.lower())
+    for cand in list(order) + [c for c in _RULE_COLUMN_CANDIDATES
+                               if c.lower() not in {o.lower() for o in order}]:
+        col = norm.get(str(cand).lower())
         if col and col not in out:
             out.append(col)
     for c in available:
@@ -655,7 +722,8 @@ def rule_keyword_columns(work_df: pd.DataFrame, loaded: LoadedData) -> List[str]
 
 
 def suggest_keyword_from_cell(work_df: pd.DataFrame, row_idx: int,
-                              column: Optional[str], loaded: LoadedData) -> str:
+                              column: Optional[str], loaded: LoadedData,
+                              config: Optional[Config] = None) -> str:
     """Best keyword from one row's column (column-focused rule creation)."""
     if row_idx < 0 or row_idx >= len(work_df):
         return ""
@@ -670,7 +738,7 @@ def suggest_keyword_from_cell(work_df: pd.DataFrame, row_idx: int,
             if len(raw) <= 40:
                 return raw
             return " ".join(raw.split()[:3])
-    return suggest_keyword_from_rows(work_df, [row_idx], loaded)
+    return suggest_keyword_from_rows(work_df, [row_idx], loaded, config)
 
 
 def rule_creation_prefill(
@@ -680,15 +748,17 @@ def rule_creation_prefill(
     *,
     column: Optional[str] = None,
     rules_manager: Optional[RulesManager] = None,
+    config: Optional[Config] = None,
 ) -> Dict[str, object]:
     """Unified prefill payload for the rule-creation dialog."""
     indices = [int(i) for i in indices if 0 <= int(i) < len(work_df)]
     na_col = loaded.new_account_col
     keyword = ""
     if len(indices) == 1 and column:
-        keyword = suggest_keyword_from_cell(work_df, indices[0], column, loaded)
+        keyword = suggest_keyword_from_cell(work_df, indices[0], column, loaded,
+                                            config)
     if not keyword:
-        keyword = suggest_keyword_from_rows(work_df, indices, loaded)
+        keyword = suggest_keyword_from_rows(work_df, indices, loaded, config)
     codes = [str(work_df.iloc[i][na_col]).strip()
              for i in indices if str(work_df.iloc[i][na_col]).strip()]
     code = ""
@@ -723,18 +793,20 @@ def rule_prompt_worthy(keyword: str, code: str,
 
 
 def suggest_keyword_from_rows(work_df: pd.DataFrame, indices: List[int],
-                              loaded: LoadedData) -> str:
+                              loaded: LoadedData,
+                              config: Optional[Config] = None) -> str:
     """Best-guess, *specific* keyword from the selected rows.
 
     Prefers the meaningful tokens shared by **every** selected row (so picking
     "Office Depot" rows yields ``"office depot"``, not the ambiguous ``"depot"``
     that would also hit Home Depot). Falls back to the most frequent token.
+    Columns are scanned in keyword-source order (Name → Memo → Description …).
     """
     if not indices:
         return ""
-    cols = rule_keyword_columns(work_df, loaded)
+    cols = rule_keyword_columns(work_df, loaded, config)
     if not cols:
-        cols = mining_columns(work_df, loaded)
+        cols = mining_columns(work_df, loaded, config)
     if not cols:
         return ""
 
@@ -809,40 +881,75 @@ def existing_rule_keywords(rules_manager: RulesManager) -> set:
             for r in rules_manager.list_rules() if (r.keyword or "").strip()}
 
 
-def mining_columns(work_df: pd.DataFrame, loaded: LoadedData) -> List[str]:
-    """Real text columns to mine for rule keywords.
+def mining_columns(work_df: pd.DataFrame, loaded: LoadedData,
+                   config: Optional[Config] = None) -> List[str]:
+    """Real text columns to mine for rule keywords, in keyword-source order.
 
     Broader than ``loaded.text_columns`` (the *similarity* columns) on purpose:
     a vendor often lives in a column that isn't configured for similarity
     (e.g. **Payee** or **Split**). Mining only the similarity columns is why
-    seeded vendors sometimes produced no candidate rules. We include every
-    original client column except the answer column and Rule Notes; numeric
-    junk is dropped later by :func:`_keywords_from_text`.
+    seeded vendors sometimes produced no candidate rules.
+
+    Columns are ordered by the configured ``columns.keyword_source`` preference
+    (Name → Memo → Description → Payee → …) so suggestions favour the vendor
+    name over a generic memo. Note-like columns (Notes, Rule Notes, any header
+    containing "note") are excluded unless the user explicitly opted them in —
+    internal coach notes must never leak into rule keywords. Numeric junk is
+    dropped later by :func:`_keywords_from_text`.
     """
-    cols: List[str] = []
-    seen: set = set()
-    ordered = list(loaded.text_columns) + list(loaded.original_columns or [])
     na_col = loaded.new_account_col
-    for c in ordered:
+    pool: List[str] = []
+    seen: set = set()
+    for c in list(loaded.text_columns) + list(loaded.original_columns or []):
         if c in seen or c not in work_df.columns:
             continue
         if c == na_col or c == RULE_NOTES_COL or str(c).startswith("_"):
             continue
+        if _is_note_column(c, config):
+            continue
         seen.add(c)
-        cols.append(c)
-    return cols
+        pool.append(c)
+
+    # Stable preference ordering: configured keyword_source first (tolerant
+    # case/spacing match), then any remaining columns in file order.
+    order, _ = _keyword_source_prefs(config)
+    rank = {str(c).strip().lower(): i for i, c in enumerate(order)}
+    return sorted(pool,
+                  key=lambda c: (rank.get(str(c).strip().lower(), len(rank)),
+                                 pool.index(c)))
+
+
+def _phrase_ngrams(tokens: List[str], max_n: int = 3) -> List[str]:
+    """Short distinctive phrases (1–3 consecutive tokens) from a token stream.
+
+    Vendor names and 2–4 word service phrases are the distinctive units on a
+    ledger; whole-row dumps are not. Stop-words/numbers are already removed by
+    :func:`_keywords_from_text`, so consecutive tokens here read naturally
+    (``"shaw media"``, ``"cunningham communications"``).
+    """
+    out: List[str] = []
+    for n in range(2, max_n + 1):
+        for i in range(len(tokens) - n + 1):
+            out.append(" ".join(tokens[i:i + n]))
+    return out
 
 
 def candidate_rules(work_df: pd.DataFrame, loaded: LoadedData,
                     rules_manager: RulesManager, *, min_support: int = 1,
                     max_candidates: int = 25, min_purity: float = 0.7,
-                    max_match_frac: float = 0.6) -> List[Dict]:
+                    max_match_frac: float = 0.6,
+                    config: Optional[Config] = None) -> List[Dict]:
     """Suggest keyword rules from rows that already have a Target Account.
 
     The *primary* rule-creation workflow: users code a few rows
     (seeding), and we mine those coded rows for a representative keyword per
     account code that isn't already covered by an existing rule. Pure + fully
     deterministic so it can be unit-tested and previewed before anything is saved.
+
+    Mining follows the configured keyword-source order (Name → Memo →
+    Description → Payee → …) and never reads note-like columns. Both single
+    tokens and short 2–3 word phrases are considered, so an ambiguous token
+    ("depot") can be superseded by the distinctive phrase ("office depot").
 
     A keyword is only suggested if it is **specific** to its account code:
 
@@ -863,7 +970,7 @@ def candidate_rules(work_df: pd.DataFrame, loaded: LoadedData,
     na_col = loaded.new_account_col
     if na_col not in work_df.columns:
         return []
-    text_cols = mining_columns(work_df, loaded)
+    text_cols = mining_columns(work_df, loaded, config)
     if not text_cols:
         return []
 
@@ -886,11 +993,15 @@ def candidate_rules(work_df: pd.DataFrame, loaded: LoadedData,
     for code, rows in code_rows.items():
         counter: Counter = Counter()
         for i in rows:
-            for tok in set(_keywords_from_text(combined[i])):
-                counter[tok] += 1
+            tokens = _keywords_from_text(combined[i])
+            for phrase in set(tokens) | set(_phrase_ngrams(tokens)):
+                counter[phrase] += 1
         chosen = None
-        # Deterministic: highest support first, then alphabetical for stable ties.
-        for tok, cnt in sorted(counter.items(), key=lambda kv: (-kv[1], kv[0])):
+        # Deterministic: highest support first, then shortest/most alphabetical
+        # for stable ties — a single distinctive token ("cunningham") beats the
+        # longer phrase it is part of when both carry the same signal.
+        for tok, cnt in sorted(counter.items(),
+                               key=lambda kv: (-kv[1], kv[0])):
             if cnt < min_support:
                 break
             if tok in used:
@@ -923,9 +1034,20 @@ def candidate_rules(work_df: pd.DataFrame, loaded: LoadedData,
             "purity": round(float(purity), 3),
         })
 
-    # Surface the most specific, highest-impact suggestions first.
+    # Collapse near-identical suggestions that point at the same account
+    # (e.g. "cunningham" vs "cunningham communications"): keep the first
+    # (highest-purity / highest-impact) and drop later ones it subsumes.
+    deduped: List[Dict] = []
     candidates.sort(key=lambda c: (-c["purity"], -c["matches"], c["keyword"]))
-    return candidates[:max_candidates]
+    for cand in candidates:
+        toks = set(cand["keyword"].split())
+        if any(cand["account_code"] == kept["account_code"]
+               and (toks <= set(kept["keyword"].split())
+                    or set(kept["keyword"].split()) <= toks)
+               for kept in deduped):
+            continue
+        deduped.append(cand)
+    return deduped[:max_candidates]
 
 
 def create_rules_from_candidates(rules_manager: RulesManager,
