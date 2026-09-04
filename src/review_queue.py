@@ -13,7 +13,7 @@ example (so the ML models improve over time).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -89,6 +89,12 @@ def build_review_table(
     table = pd.DataFrame(rows)
     if not table.empty:
         table = table[columns_order]
+        # Default review order: least certain first, then grouped together.
+        table = table.sort_values(
+            by=["Confidence", "Group"],
+            ascending=[True, True],
+            kind="stable",
+        ).reset_index(drop=True)
     return table
 
 
@@ -119,16 +125,22 @@ def apply_reviews(
     storage: Storage,
     learn: bool = True,
     approved_by: str = "user",
+    client_id: Optional[str] = None,
 ) -> Dict[str, int]:
     """Apply the user's edited review table back onto ``df`` (in place).
 
     For every approved row with a value we:
       * write the value into the dataframe (canonicalised),
       * record a learned mapping (exact-match memory),
-      * record a labelled training example (for the ML models).
+      * record a labelled training example (for the ML models),
+      * reinforce the account's knowledge profile.
 
+    All learning flows through
+    :func:`src.rules_manager.record_human_approval` — the single learning path.
     Returns counts of what changed.
     """
+    from src.rules_manager import record_human_approval
+
     applied = 0
     learned = 0
     trained = 0
@@ -156,15 +168,21 @@ def apply_reviews(
             if sig_idx is not None:
                 signature = str(df.iat[idx, sig_idx]).strip()
                 if signature:
-                    if learn:
-                        storage.upsert_learned_mapping(signature, new_value)
-                        learned += 1
-                    # Capture as labelled training data for the ML models.
                     confidence = _safe_float(row.get("Confidence"), 1.0)
                     engine = str(row.get("Engine", "manual")) or "manual"
-                    storage.add_training_example(
-                        text=signature, label=new_value, confidence=confidence,
-                        engine_used=engine, approved_by=approved_by)
+                    if learn:
+                        record_human_approval(
+                            storage, signature, new_value,
+                            confidence=confidence, engine_used=engine,
+                            approved_by=approved_by, client_id=client_id)
+                        learned += 1
+                    else:
+                        # Capture as labelled training data for the ML models.
+                        storage.add_training_example(
+                            text=signature, label=new_value,
+                            confidence=confidence,
+                            engine_used=engine, approved_by=approved_by,
+                            client_id=client_id)
                     trained += 1
         else:
             if current:

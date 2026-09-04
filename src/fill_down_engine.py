@@ -183,7 +183,10 @@ class FillDownEngine:
             if match:
                 code = normalize_code(match.account_code)
                 df.iat[i, na_loc] = code
-                rationale = f"Matched rule '{match.rule.keyword}' -> {code}."
+                rule_ref = (f"rule #{match.rule.id} " if match.rule.id
+                            is not None else "rule ")
+                rationale = (f"Matched {rule_ref}'{match.rule.keyword}' "
+                             f"({match.rule.match_type}) -> {code}.")
                 # Surface rule-vs-memory conflicts: the rule still wins (cascade
                 # order), but the user deserves to see the disagreement.
                 remembered = self.learned_lookup.get(text)
@@ -222,7 +225,8 @@ class FillDownEngine:
                     confidence=self.config.confidence.learned_match_confidence,
                     source=FillSource.LEARNED, engine_used="learned",
                     action=FillAction.AUTO_FILLED, group_id=group_id,
-                    rationale="Matched a previously approved transaction.",
+                    rationale=("Learned exact match — you approved this "
+                               "transaction before."),
                 ))
                 continue
 

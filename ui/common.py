@@ -134,6 +134,8 @@ def init_state(config) -> None:
         "rule_prompt": None,
         "dismissed_rule_prompts": [],
         "hide_rule_suggestions": False,
+        "memory_bootstrap_dismissed": False,
+        "ingest_banner_dismissed": False,
         "flash": None,
         "show_install_page": False,
         "confirm_action": None,       # None | clear_spreadsheet | start_fresh
@@ -162,13 +164,22 @@ def show_flash() -> None:
 # --------------------------------------------------------------------------- #
 # Engine + loading
 # --------------------------------------------------------------------------- #
+def current_client_id() -> Optional[str]:
+    """The active client/project name as a storage client id (None = shared)."""
+    name = st.session_state.get("client_name") or ""
+    return name.strip() or None
+
+
 def make_engine() -> FillDownEngine:
     config, storage, rules, mm, _ = services()
+    client_id = current_client_id()
     return FillDownEngine(
         config, rules,
-        learned_lookup=storage.get_learned_lookup(),
+        learned_lookup=storage.get_learned_lookup(client_id=client_id),
         model_manager=mm,
         mode=st.session_state.get("ml_mode", config.ml.mode),
+        client_id=client_id,
+        blocked_lookup=storage.get_blocked_lookup(client_id=client_id),
     )
 
 
@@ -180,11 +191,14 @@ def make_hybrid_engine() -> FillDownEngine:
     similar transactions, using learned memory + semantic similarity only.
     """
     config, storage, rules, _mm, _ = services()
+    client_id = current_client_id()
     return FillDownEngine(
         config, rules,
-        learned_lookup=storage.get_learned_lookup(),
+        learned_lookup=storage.get_learned_lookup(client_id=client_id),
         model_manager=None,
         mode="similarity_only",
+        client_id=client_id,
+        blocked_lookup=storage.get_blocked_lookup(client_id=client_id),
     )
 
 
@@ -208,6 +222,8 @@ def load_into_session(raw: bytes, name: str, ext: str, sheet=0) -> None:
     st.session_state["rule_prompt"] = None
     st.session_state["dismissed_rule_prompts"] = []
     st.session_state["rule_panel_open"] = False
+    st.session_state["memory_bootstrap_dismissed"] = False
+    st.session_state["ingest_banner_dismissed"] = False
 
 
 def reset_file_session() -> None:
@@ -234,6 +250,8 @@ def reset_file_session() -> None:
     st.session_state["rule_prompt"] = None
     st.session_state["dismissed_rule_prompts"] = []
     st.session_state["hide_rule_suggestions"] = False
+    st.session_state["memory_bootstrap_dismissed"] = False
+    st.session_state["ingest_banner_dismissed"] = False
     st.session_state["export_open"] = False
     st.session_state["panel"] = None
     st.session_state["confirm_action"] = None

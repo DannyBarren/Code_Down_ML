@@ -126,6 +126,42 @@ class RuleMatch:
     rule: KeywordRule
 
 
+def record_human_approval(
+    storage: Storage,
+    signature: str,
+    account_code: str,
+    *,
+    confidence: float = 1.0,
+    engine_used: str = "manual",
+    approved_by: str = "user",
+    client_id: Optional[str] = None,
+) -> bool:
+    """The single learning path for every human decision.
+
+    One approval writes all three kinds of memory:
+      1. a **learned mapping** (exact signature -> code; last human write wins),
+      2. a **training example** for the ML models,
+      3. a reinforcement of the account's knowledge profile.
+
+    Returns False (and writes nothing) for blank signatures/codes. Never
+    raises for the profile reinforcement — learning must not break approvals.
+    """
+    signature = (signature or "").strip()
+    code = normalize_code(account_code)
+    if not signature or not code:
+        return False
+    storage.upsert_learned_mapping(signature, code, client_id=client_id)
+    storage.add_training_example(
+        text=signature, label=code, confidence=float(confidence),
+        engine_used=engine_used, approved_by=approved_by, client_id=client_id)
+    try:
+        RulesManager(storage).record_account_usage(
+            code, sample_text=signature, client_id=client_id)
+    except Exception as exc:  # noqa: BLE001 - best-effort reinforcement
+        logger.warning("approval_profile_reinforce_failed", error=str(exc))
+    return True
+
+
 def near_miss_suggestions(
     results: List[RuleRunResult],
     df: pd.DataFrame,
@@ -688,14 +724,18 @@ class RulesManager:
         df: pd.DataFrame,
         client_id: Optional[str] = None,
         source_text_col: str = "Description",
+        source_text_cols: Optional[List[str]] = None,
     ) -> int:
         """Turn pre-filled ``New Account`` rows into high-priority exact rules.
 
         Each coded row becomes a reusable exact-match rule (``priority=10`` so it
-        wins over broad ``contains`` rules). The rule keyword is taken from
-        ``source_text_col`` when present, else the first meaningful text column on
-        the row. Duplicates (same phrase + code, or an already-existing rule) are
-        skipped. Returns the number of new rules created.
+        wins over broad ``contains`` rules). The rule keyword is taken from the
+        first column with a value in ``source_text_cols`` preference order
+        (Name → Memo → Description … — never note-like columns); when that list
+        is omitted, ``source_text_col`` is tried, then the first meaningful text
+        column on the row. Duplicates (same phrase + code, or an
+        already-existing rule) are skipped. Returns the number of new rules
+        created.
         """
         if NEW_ACCOUNT_COL not in df.columns:
             return 0
@@ -711,15 +751,22 @@ class RulesManager:
 
             row = df.loc[idx]
             text = ""
-            if source_text_col in df.columns and _has_value(row.get(source_text_col)):
-                text = str(row.get(source_text_col)).strip()
-            else:
-                for c in df.columns:
-                    if str(c).startswith("_") or c in (NEW_ACCOUNT_COL, RULE_NOTES_COL):
-                        continue
-                    if _has_value(row.get(c)):
-                        text = str(row.get(c)).strip()
+            if source_text_cols:
+                for col in source_text_cols:
+                    if col in df.columns and _has_value(row.get(col)):
+                        text = str(row.get(col)).strip()
                         break
+            if not text:
+                if source_text_col in df.columns \
+                        and _has_value(row.get(source_text_col)):
+                    text = str(row.get(source_text_col)).strip()
+                else:
+                    for c in df.columns:
+                        if str(c).startswith("_") or c in (NEW_ACCOUNT_COL, RULE_NOTES_COL):
+                            continue
+                        if _has_value(row.get(c)):
+                            text = str(row.get(c)).strip()
+                            break
             if not text:
                 continue
 

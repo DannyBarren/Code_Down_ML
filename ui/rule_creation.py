@@ -72,9 +72,10 @@ def render_selection_strip(work, loaded, rules_manager, counts: dict,
     if not sel:
         return
 
-    kw_cols = sh.rule_keyword_columns(work, loaded)
+    kw_cols = sh.rule_keyword_columns(work, loaded, config)
     prefill = sh.rule_creation_prefill(work, sel, loaded,
-                                       rules_manager=rules_manager)
+                                       rules_manager=rules_manager,
+                                       config=config)
     keyword = str(prefill.get("keyword", ""))
     code = str(prefill.get("code", ""))
 
@@ -94,7 +95,7 @@ def render_selection_strip(work, loaded, rules_manager, counts: dict,
                      "of this row.")
             if focus != "Best guess":
                 focused_kw = sh.suggest_keyword_from_cell(
-                    work, sel[0], focus, loaded)
+                    work, sel[0], focus, loaded, config)
                 if focused_kw:
                     keyword = focused_kw
                     prefill["keyword"] = keyword
@@ -104,10 +105,13 @@ def render_selection_strip(work, loaded, rules_manager, counts: dict,
             c2.caption("Tip: select one row to pull the keyword from a column.")
 
         if keyword:
-            cnt, _ = sh.rule_preview(
+            detail = sh.rule_preview_detail(
                 work, keyword, "contains", False,
                 list(prefill.get("fields") or []), loaded, config)
-            c3.caption(f"Would match **{cnt}** row(s) in this file.")
+            c3.caption(
+                f"Would fill **{detail['blank_matches']}** blank row(s)"
+                + (f" · {detail['protected_matches']} already coded"
+                   if detail["protected_matches"] else ""))
 
         if c4.button("Create rule", type="primary", width="stretch",
                      key="strip_create_rule"):
@@ -134,9 +138,11 @@ def render_target_account_prompt(work, loaded) -> None:
     )
     y, n, _ = st.columns([1, 1, 6])
     if y.button("Yes, create rule", type="primary", key="rule_prompt_yes"):
+        config, *_ = common.services()
         row = int(prompt.get("row", -1))
         indices = [row] if 0 <= row < len(work) else sh.selected_indices(work)
-        prefill = sh.rule_creation_prefill(work, indices, loaded)
+        prefill = sh.rule_creation_prefill(work, indices, loaded,
+                                           config=config)
         prefill["keyword"] = kw
         prefill["code"] = code
         st.session_state.pop("rule_prompt", None)
@@ -150,12 +156,112 @@ def render_target_account_prompt(work, loaded) -> None:
         st.rerun()
 
 
+def render_memory_bootstrap_banner(work, loaded, rules_manager, storage,
+                                   config) -> None:
+    """Fresh-file bootstrap: what this client already knows + one-click memory.
+
+    Shown once per file when no automation has run yet and the client has
+    rules or remembered codes. "Apply remembered codes" runs the deterministic
+    learned-memory-only pass (blank rows, exact signature match) — safe and
+    auditable.
+    """
+    if st.session_state.get("memory_bootstrap_dismissed"):
+        return
+    if sh.ENGINE_COL not in work.columns:
+        return
+    # Only before any automation has run (engines are all seed/blank).
+    engines = {str(e).strip() for e in work[sh.ENGINE_COL].unique()}
+    if engines - {"", "seed"}:
+        return
+
+    client_id = st.session_state.get("client_name") or None
+    n_rules = len(rules_manager.list_rules(enabled_only=True,
+                                           client_id=client_id))
+    n_memory = len(storage.list_learned_mappings(client_id=client_id))
+    if not n_rules and not n_memory:
+        return
+
+    st.markdown(
+        f"<div class='pc-seed-banner'>"
+        f"<strong>{n_rules} rule{'s' if n_rules != 1 else ''} and "
+        f"{n_memory:,} remembered code{'s' if n_memory != 1 else ''}</strong> "
+        f"are ready for this client. Run <strong>Rules — Strict</strong> to "
+        f"apply rules, or apply the remembered exact matches now."
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    c1, c2, c3 = st.columns([1.8, 1.2, 4])
+    if c1.button("Apply remembered codes", type="primary", width="stretch",
+                 key="bootstrap_apply_memory",
+                 help="Deterministic: fills blank rows whose exact transaction "
+                      "text you approved before. Never overwrites anything."):
+        common.push_undo()
+        n = sh.run_learned_memory(work, loaded, storage, config,
+                                  client_id=client_id)
+        st.session_state["memory_bootstrap_dismissed"] = True
+        st.session_state["data_version"] = \
+            st.session_state.get("data_version", 0) + 1
+        if n:
+            common.set_flash(
+                f"Applied {n:,} remembered code(s) to blank rows — exact "
+                "matches you approved before.")
+        else:
+            common.set_flash(
+                "No blank rows matched a remembered code exactly. Run Rules — "
+                "Strict next, or Full Intelligent for broader matching.")
+        st.rerun()
+    if c2.button("Dismiss", width="stretch", key="bootstrap_dismiss"):
+        st.session_state["memory_bootstrap_dismissed"] = True
+        st.rerun()
+
+
+def render_ingest_banner(work, loaded, rules_manager, storage, config) -> None:
+    """One-click ingest of pre-filled rows as exact rules (Name → Memo → …)."""
+    if st.session_state.get("ingest_banner_dismissed"):
+        return
+    from src.data_loader import summarize_upload
+    stats = summarize_upload(work, loaded.new_account_col)
+    if stats["prefilled"] <= 0:
+        return
+
+    st.markdown(
+        f"<div class='pc-seed-banner'>"
+        f"<strong>{stats['prefilled']:,} coded example"
+        f"{'s' if stats['prefilled'] != 1 else ''}</strong> found in this "
+        f"file. Turn them into exact-match rules in one click — they fill "
+        f"identical transactions now and on every future file."
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    c1, c2, c3 = st.columns([1.8, 1.2, 4])
+    if c1.button("Ingest as exact rules", type="primary", width="stretch",
+                 key="banner_ingest_exact",
+                 help="Creates one high-priority exact-match rule per coded "
+                      "row, keyed on Name, then Memo, then Description. "
+                      "Review them anytime in the Rules panel."):
+        client_id = st.session_state.get("client_name") or None
+        source_cols = sh.mining_columns(work, loaded, config)
+        created = rules_manager.ingest_existing_new_account_as_rules(
+            work, client_id=client_id, source_text_cols=source_cols)
+        st.session_state["ingest_banner_dismissed"] = True
+        common.set_flash(
+            f"Ingested {created} exact rule(s) from your coded rows. Run "
+            "Rules — Strict to apply them."
+            if created else
+            "Those coded rows are already covered by existing rules.")
+        st.rerun()
+    if c2.button("Dismiss", width="stretch", key="banner_ingest_dismiss"):
+        st.session_state["ingest_banner_dismissed"] = True
+        st.rerun()
+
+
 def render_seed_suggestion_banner(work, loaded, rules_manager) -> None:
     """Banner when coded rows yield candidate rules (upload / seeding)."""
     if st.session_state.get("hide_rule_suggestions"):
         return
+    config, *_ = common.services()
     try:
-        cands = sh.candidate_rules(work, loaded, rules_manager)
+        cands = sh.candidate_rules(work, loaded, rules_manager, config=config)
     except Exception:  # noqa: BLE001
         return
     if not cands:
@@ -186,7 +292,7 @@ def rule_creation_dialog(work, loaded, config, rules, storage) -> None:
     """Modal rule builder with live preview."""
     prefill = st.session_state.get("rule_prefill", {})
     indices = list(prefill.get("indices") or sh.selected_indices(work))
-    kw_cols = sh.rule_keyword_columns(work, loaded)
+    kw_cols = sh.rule_keyword_columns(work, loaded, config)
 
     st.caption(
         "A rule is organised around **one Target Account code**. Give it as many "
@@ -264,10 +370,17 @@ def rule_creation_dialog(work, loaded, config, rules, storage) -> None:
             label_visibility="collapsed")
 
     keyword = keyword.strip()
+    blank_matches = 0
     if keyword:
-        count, sample = sh.rule_preview(
+        detail = sh.rule_preview_detail(
             work, keyword, match_type, case_sensitive, fields, loaded, config)
-        st.markdown(f"**Live preview — {count} row(s) would match**")
+        blank_matches = int(detail["blank_matches"])
+        protected = int(detail["protected_matches"])
+        st.markdown(
+            f"**Live preview — fills {blank_matches} blank row(s)**"
+            + (f" · matches {protected} already-coded row(s) "
+               "*(those are never overwritten)*" if protected else ""))
+        sample = detail["samples"]
         if not sample.empty:
             st.dataframe(sample, width="stretch", hide_index=True, height=160)
         if code.strip():
@@ -279,10 +392,20 @@ def rule_creation_dialog(work, loaded, config, rules, storage) -> None:
     else:
         st.caption("Enter a keyword to see the live match preview.")
 
+    # Guard: a rule that fills zero blank rows is usually a typo — make the
+    # user confirm before saving it.
+    confirm_zero = True
+    if keyword and blank_matches == 0:
+        st.warning("This rule matches **0 blank rows** in the current file, "
+                   "so it would fill nothing here right now.")
+        confirm_zero = st.checkbox(
+            "Save it anyway — it will apply to future files",
+            value=False, key="rulepanel_confirm_zero")
+
     b1, b2, b3 = st.columns([2, 2, 1])
     create = b1.button(
         "Create rule and apply", type="primary", width="stretch",
-        disabled=not (keyword and code.strip()),
+        disabled=not (keyword and code.strip() and confirm_zero),
         key="rulepanel_create_btn")
     stamp_notes = b2.checkbox(
         "Stamp rule notes on matched rows",

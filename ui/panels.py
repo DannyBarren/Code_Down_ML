@@ -92,8 +92,9 @@ def _render_ingest_prefilled(rules_manager) -> None:
     if stats["prefilled"] <= 0:
         return
 
+    from src import spreadsheet_helpers as sh
     cands = rules_manager.prefilled_ingest_candidates(
-        work, text_cols=list(loaded.text_columns))
+        work, text_cols=sh.mining_columns(work, loaded, config))
     if not cands:
         return
 
@@ -157,7 +158,7 @@ def _render_suggested_rules(rules_manager) -> None:
     loaded = st.session_state.get("loaded")
     if work is None or loaded is None:
         return
-    cands = sh.candidate_rules(work, loaded, rules_manager)
+    cands = sh.candidate_rules(work, loaded, rules_manager, config=config)
     if not cands:
         return
 

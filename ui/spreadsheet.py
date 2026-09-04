@@ -29,7 +29,7 @@ from ui import rule_creation as rc
 from ui.common import services
 
 FILTER_MODES = ["All", "Review only", "High confidence", "Blanks only",
-                "Filled only"]
+                "Filled only", "Filled by rules", "Filled by memory"]
 PAGE_SIZES = [100, 250, 500, 1000, 1500, 2000, 5000]
 EDITOR_HEIGHT = 720
 
@@ -51,9 +51,18 @@ def render_spreadsheet() -> None:
             st.rerun()
         return
 
+    # A run may ask to switch the quick-view filter (must happen before the
+    # filter widgets are instantiated below).
+    pending_mode = st.session_state.pop("_pending_filter_mode", None)
+    if pending_mode in FILTER_MODES:
+        st.session_state["filter_mode"] = pending_mode
+        st.session_state["page"] = 0
+
     counts = sh.summary_counts(work, loaded)
 
     _render_header(loaded, counts)
+    rc.render_memory_bootstrap_banner(work, loaded, rules, storage, config)
+    rc.render_ingest_banner(work, loaded, rules, storage, config)
     rc.render_seed_suggestion_banner(work, loaded, rules)
     _render_run_metrics(work, loaded, counts)
     _render_rule_audit(work, loaded)
@@ -274,12 +283,17 @@ def _render_rule_audit(work, loaded) -> None:
         return
 
     scoped = audit.get("scoped")
-    is_pure = audit.get("mode") == "pure"
+    mode = audit.get("mode")
+    is_pure = mode in ("pure", "rules+memory")
     kw_n = int(audit.get("keyword_filled", 0))
     sem_n = int(audit.get("semantic_filled", 0))
-    total = kw_n + sem_n
+    mem_n = int(audit.get("memory_filled", 0))
+    total = kw_n + sem_n + mem_n
 
-    if is_pure:
+    if mode == "rules+memory":
+        label = ("Last run — rules + memory (selected rows)" if scoped
+                 else "Last run — rules + memory")
+    elif is_pure:
         label = ("Last run — strict rules (selected rows)" if scoped
                  else "Last run — strict rules")
     else:
@@ -315,18 +329,23 @@ def _render_rule_audit_details(audit: dict, is_pure: bool) -> None:
     total = kw_n + sem_n
 
     if is_pure:
+        mem_n = int(audit.get("memory_filled", 0))
         st.caption(
-            "Deterministic: only your keyword rules ran, filling blank rows "
-            "with only those rules' target codes. No similarity, no other "
+            "Deterministic: only your keyword rules"
+            + (" and remembered exact matches" if audit.get("mode")
+               == "rules+memory" else "")
+            + " ran, filling blank rows only. No similarity, no other "
             "accounts. Use **Full Intelligent Run** for broader matching.")
-        m = st.columns(4)
+        m = st.columns(5)
         m[0].metric("Filled by rules", f"{kw_n:,}")
-        m[1].metric("Protected (already coded)",
+        m[1].metric("Filled by memory", f"{mem_n:,}",
+                    help="Exact matches to codes you approved before.")
+        m[2].metric("Protected (already coded)",
                     f"{int(audit.get('protected_existing', 0)):,}",
                     delta=(f"{pbm} matched a rule" if pbm else None),
                     delta_color="off")
-        m[2].metric("Still blank", f"{int(audit.get('left_blank', 0)):,}")
-        m[3].metric("Distinct codes used",
+        m[3].metric("Still blank", f"{int(audit.get('left_blank', 0)):,}")
+        m[4].metric("Distinct codes used",
                     f"{len({r.proposed_value for r in kw_results}):,}")
     else:
         st.caption(
@@ -385,6 +404,25 @@ def _render_rule_audit_details(audit: dict, is_pure: bool) -> None:
 
     if not kw_results and not sem_results:
         st.info("No blank rows were filled in this run.")
+
+    # Near misses: rows no rule fired on that almost matched — suggestions to
+    # widen a rule, never auto-filled.
+    near_misses = audit.get("near_misses") or []
+    if near_misses:
+        with st.expander(f"Near misses — {len(near_misses)} rule(s) almost "
+                         "matched leftover rows", expanded=False):
+            st.caption(
+                "These blank rows share most of a rule's words but didn't "
+                "match. Widen the rule (add the suggested phrase) if they "
+                "should be covered — nothing here was filled.")
+            for nm in near_misses:
+                rows_n = len(nm.get("rows", []))
+                extras = ", ".join(nm.get("suggested_tokens") or [])
+                st.markdown(
+                    f"- Rule **'{nm['rule_keyword']}'** → "
+                    f"**{nm['account_code']}** nearly matched "
+                    f"**{rows_n}** blank row(s)"
+                    + (f" — consider adding: `{extras}`" if extras else ""))
 
     if pbm:
         matched_protected = audit.get("protected_results", [])
@@ -487,57 +525,77 @@ def _render_header(loaded, counts: dict) -> None:
 def _render_toolbar(work, loaded, counts: dict, config) -> dict:
     st.markdown("<div class='pc-toolbar'></div>", unsafe_allow_html=True)
     actions = {}
-    r1 = st.columns([2, 2, 2.4, 2, 1, 1, 1.4])
-    actions["run_full"] = r1[0].button(
-        "Full Intelligent Run", type="primary", width="stretch", key="tb_run_full",
-        help="Broad matching: uses ALL rules + every coded example/seed in the "
-             "sheet + learned memory + the AI model + semantic similarity across "
-             "the whole dataset. This is where similar transactions get spread.")
-    actions["run_rules"] = r1[1].button(
-        "Run Rules (strict)", width="stretch", key="tb_run_rules",
-        help="Deterministic: fills blank rows ONLY where your keyword rules "
-             "match, using ONLY those rules' target account codes. No semantic "
-             "similarity, no other accounts, no learned memory. Exactly what "
-             "your rules say. Never overwrites rows that already have a value.")
-    sel_count = counts["selected"]
-    actions["create_rule"] = r1[2].button(
-        "Create Rule from Selection", width="stretch", key="tb_create_rule",
-        type="primary" if sel_count else "secondary",
-        disabled=sel_count == 0,
-        help="Select rows with the Sel checkbox to build a rule. You're also "
-             "prompted automatically after typing a Target Account code.")
-    actions["approve"] = r1[3].button(
-        f"Approve Selected ({sel_count})", width="stretch",
-        key="tb_approve", disabled=sel_count == 0,
-        help="Confirm the codes on the selected rows and add them to training.")
-    actions["undo"] = r1[4].button(
-        "Undo", width="stretch", key="tb_undo",
-        disabled=not st.session_state.get("undo_stack"))
-    actions["redo"] = r1[5].button(
-        "Redo", width="stretch", key="tb_redo",
-        disabled=not st.session_state.get("redo_stack"))
-    actions["export"] = r1[6].button(
-        "Export", width="stretch", key="tb_export",
-        help="Download the finished file (Excel preserves formatting; CSV is "
-             "ready to import).")
 
-    r2 = st.columns([2.6, 2, 2, 1.8, 2.2])
-    actions["run_rules_hybrid"] = r2[0].button(
+    # Recommended path first, left to right: Strict -> + Memory -> +
+    # Similarity -> Full Intelligent (broadest, visually secondary).
+    r1 = st.columns([2.5, 1.9, 2.1, 2.1])
+    actions["run_rules"] = r1[0].button(
+        "Run Rules — Strict ★", type="primary", width="stretch",
+        key="tb_run_rules",
+        help="RECOMMENDED. Deterministic: fills blank rows ONLY where your "
+             "keyword rules match, using ONLY those rules' target account "
+             "codes. No semantic similarity, no other accounts, no learned "
+             "memory. Exactly what your rules say. Never overwrites rows that "
+             "already have a value.")
+    actions["run_memory"] = r1[1].button(
+        "Rules + Memory", width="stretch", key="tb_run_memory",
+        help="Strict rules first, then exact matches you approved before "
+             "(learned memory). Deterministic — no similarity, no AI. Never "
+             "overwrites existing values.")
+    actions["run_rules_hybrid"] = r1[2].button(
         "Run Rules + Similarity", width="stretch", key="tb_run_rules_hybrid",
         help="Hybrid: applies your keyword rules, then spreads those codes to "
              "similar blank rows via semantic similarity (with confidence "
              "scores). Broader than strict rules, narrower than the Full "
              "Intelligent Run.")
-    with r2[1].popover("Automation settings", use_container_width=True):
-        _render_automation_controls(config)
+    actions["run_full"] = r1[3].button(
+        "Full Intelligent Run", width="stretch", key="tb_run_full",
+        help="Uses similarity and ML on top of rules + memory. Can fill rows "
+             "no rule matched — review those in the Review workspace. Never "
+             "overwrites existing values.")
+
+    sel_count = counts["selected"]
+    r2 = st.columns([2.2, 1.9, 1.8, 1.5, 0.9, 0.9, 1.2, 1.6])
+    actions["create_rule"] = r2[0].button(
+        "Create Rule from Selection", width="stretch", key="tb_create_rule",
+        type="primary" if sel_count else "secondary",
+        disabled=sel_count == 0,
+        help="Select rows with the Sel checkbox to build a rule. You're also "
+             "prompted automatically after typing a Target Account code.")
+    actions["approve"] = r2[1].button(
+        f"Approve Selected ({sel_count})", width="stretch",
+        key="tb_approve", disabled=sel_count == 0,
+        help="Confirm the codes on the selected rows and add them to training.")
     actions["select_all"] = r2[2].button(
         "Select all in view", width="stretch", key="tb_select_all",
         help="Select every row that matches the current search and filters "
              "(across all pages).")
     actions["clear_sel"] = r2[3].button("Clear selection", width="stretch",
                                         key="tb_clear_sel")
-    with r2[4].popover("Reset", use_container_width=True):
+    actions["undo"] = r2[4].button(
+        "Undo", width="stretch", key="tb_undo",
+        disabled=not st.session_state.get("undo_stack"))
+    actions["redo"] = r2[5].button(
+        "Redo", width="stretch", key="tb_redo",
+        disabled=not st.session_state.get("redo_stack"))
+    actions["export"] = r2[6].button(
+        "Export", width="stretch", key="tb_export",
+        help="Download the finished file (Excel preserves formatting; CSV is "
+             "ready to import).")
+    with r2[7].popover("Reset", use_container_width=True):
         _render_reset_controls()
+
+    r3 = st.columns([2.2, 6])
+    with r3[0].popover("Automation settings", use_container_width=True):
+        _render_automation_controls(config)
+    if counts["review_pending"]:
+        if r3[1].button(
+                f"Review {counts['review_pending']:,} flagged row(s) →",
+                width="stretch", key="tb_goto_review",
+                help="Open the Review workspace: grouped, least-confident "
+                     "first, with one-click group approvals."):
+            st.session_state["view"] = "review"
+            st.rerun()
     return actions
 
 
@@ -762,7 +820,9 @@ def _code_suggestions(work, na_col) -> list:
 
 def _commit_with_undo(work, edited, loaded, storage, config, rules) -> None:
     pre = sh.snapshot(work)
-    counts = sh.commit_editor_changes(work, edited, loaded, storage, config)
+    client_id = st.session_state.get("client_name") or None
+    counts = sh.commit_editor_changes(work, edited, loaded, storage, config,
+                                      client_id=client_id)
     if counts.get("targets") or counts.get("notes"):
         stack = st.session_state["undo_stack"]
         stack.append(pre)
@@ -852,6 +912,15 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
         audit = sh.pure_rule_audit(results, config)
         audit["scoped"] = bool(sel)
         audit["applied"] = n
+        # Near misses: rows no rule fired on that almost matched — suggested
+        # rule edits, never auto-filled.
+        try:
+            from src.rules_manager import near_miss_suggestions
+            audit["near_misses"] = near_miss_suggestions(
+                results, work, rules.list_rules(enabled_only=True),
+                list(loaded.text_columns))
+        except Exception:  # noqa: BLE001 - suggestions are best-effort
+            audit["near_misses"] = []
         st.session_state["last_rule_audit"] = audit
         _bump()
         msg = (f"Rules filled {n:,} blank row(s) using only your rules' codes. "
@@ -861,7 +930,39 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
         if n == 0 and pbm:
             msg += (f"  Note: your rules matched {pbm} already-coded row(s) — "
                     "they work, but those cells already have a value.")
+        if audit["left_blank"]:
+            msg += " Open Review to finish the leftovers."
         common.set_flash(msg)
+        # Show the impact immediately: jump the grid to the rule-filled rows.
+        if n:
+            st.session_state["_pending_filter_mode"] = "Filled by rules"
+        st.rerun()
+
+    # Rules + Memory — strict rules, then exact matches approved before.
+    # Deterministic (no similarity, no AI), blank-only, fully audited.
+    if actions.get("run_memory"):
+        client_id = st.session_state.get("client_name") or None
+        if not rules.list_rules(enabled_only=True) \
+                and not storage.get_learned_lookup(client_id=client_id):
+            common.set_flash(
+                "No rules or remembered codes yet. Create a rule or approve a "
+                "few rows first — memory builds from your approvals.")
+            st.rerun()
+        common.push_undo()
+        sel = sh.selected_indices(work)
+        indices = sel if sel else None
+        n, audit = sh.run_rules_plus_memory(
+            work, rules, loaded, config, indices=indices, client_id=client_id)
+        audit["applied"] = n
+        st.session_state["last_rule_audit"] = audit
+        _bump()
+        common.set_flash(
+            f"Filled {n:,} blank row(s): {audit['keyword_filled']:,} by rules, "
+            f"{audit.get('memory_filled', 0):,} from remembered codes. "
+            f"{audit['protected_existing']:,} already coded (protected); "
+            f"{audit['left_blank']:,} still blank.")
+        if n:
+            st.session_state["_pending_filter_mode"] = "Filled only"
         st.rerun()
 
     # Hybrid rules run — explicit, separate action. Applies keyword rules, then
@@ -877,11 +978,16 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
         sel = sh.selected_indices(work)
         indices = sel if sel else None
         client_id = st.session_state.get("client_name") or None
+        progress = st.progress(0.0, text="Applying rules…")
+
+        def hybrid_cb(frac, msg):
+            progress.progress(min(max(frac, 0.0), 1.0), text=msg)
+
         try:
-            with st.spinner("Applying rules and finding similar transactions…"):
-                n, audit = sh.run_rules_hybrid(
-                    work, rules, loaded, config, common.make_hybrid_engine(),
-                    indices=indices, client_id=client_id)
+            n, audit = sh.run_rules_hybrid(
+                work, rules, loaded, config, common.make_hybrid_engine(),
+                indices=indices, client_id=client_id, progress_cb=hybrid_cb)
+            progress.progress(1.0, text="Done.")
         except Exception as exc:  # noqa: BLE001
             st.error(f"The rule run did not complete: {exc}")
             logger.error("rule_run_failed", error=str(exc))
@@ -911,7 +1017,7 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
                 "Select one or more rows with the Sel checkbox to create a rule.")
             st.rerun()
         prefill = sh.rule_creation_prefill(work, sel, loaded,
-                                           rules_manager=rules)
+                                           rules_manager=rules, config=config)
         rc.open_rule_panel(prefill)
         st.rerun()
 
@@ -924,8 +1030,12 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
     # Approve selected.
     if actions.get("approve"):
         common.push_undo()
-        out = sh.approve_rows(work, loaded, storage, config)
+        client_id = st.session_state.get("client_name") or None
+        out = sh.approve_rows(work, loaded, storage, config,
+                              client_id=client_id)
         _bump()
+        st.toast(f"Approved {out['applied']} · learned {out['learned']} · "
+                 "queued for next model train")
         common.set_flash(
             f"Approved {out['applied']} transaction(s); learned "
             f"{out['learned']} mapping(s).")
