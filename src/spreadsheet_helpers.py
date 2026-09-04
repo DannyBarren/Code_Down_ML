@@ -54,9 +54,11 @@ ENGINE_COL = "_engine"
 ACTION_COL = "_action"
 WHY_COL = "_why"
 SUGGESTED_COL = "_suggested"
+GROUP_COL = "_group"
 
 # All meta columns the spreadsheet maintains (besides _sim_text / _base_sig).
-META_COLS = [SELECT_COL, CONF_COL, ENGINE_COL, ACTION_COL, WHY_COL, SUGGESTED_COL]
+META_COLS = [SELECT_COL, CONF_COL, ENGINE_COL, ACTION_COL, WHY_COL,
+             SUGGESTED_COL, GROUP_COL]
 # Columns the user may edit directly in the grid.
 EDITABLE_COLS = [SELECT_COL, NEW_ACCOUNT_COL, RULE_NOTES_COL]
 
@@ -120,6 +122,7 @@ def build_work_df(loaded: LoadedData, storage: Storage, config: Config) -> pd.Da
     df[ACTION_COL] = ""
     df[WHY_COL] = ""
     df[SUGGESTED_COL] = ""
+    df[GROUP_COL] = ""
 
     # Pre-mark seed rows (already coded) so the metrics/filters are correct
     # before the first run.
@@ -154,7 +157,7 @@ def ensure_state_columns(df: pd.DataFrame) -> pd.DataFrame:
     if RULE_NOTES_COL not in df.columns:
         df[RULE_NOTES_COL] = ""
     defaults = {SELECT_COL: False, CONF_COL: 0.0, ENGINE_COL: "",
-                ACTION_COL: "", WHY_COL: "", SUGGESTED_COL: ""}
+                ACTION_COL: "", WHY_COL: "", SUGGESTED_COL: "", GROUP_COL: ""}
     for col, default in defaults.items():
         if col not in df.columns:
             df[col] = default
@@ -208,6 +211,8 @@ def apply_run_result(work_df: pd.DataFrame, result: EngineResult,
     act = work_df[ACTION_COL].tolist()
     why = work_df[WHY_COL].tolist()
     sug = work_df[SUGGESTED_COL].tolist()
+    grp = (work_df[GROUP_COL].tolist() if GROUP_COL in work_df.columns
+           else [""] * len(work_df))
     for r in result.results:
         i = r.row_index
         if i < 0 or i >= len(work_df):
@@ -217,11 +222,13 @@ def apply_run_result(work_df: pd.DataFrame, result: EngineResult,
         act[i] = r.action.value
         why[i] = r.rationale
         sug[i] = r.proposed_value or ""
+        grp[i] = "" if r.group_id is None else int(r.group_id)
     work_df[CONF_COL] = conf
     work_df[ENGINE_COL] = eng
     work_df[ACTION_COL] = act
     work_df[WHY_COL] = why
     work_df[SUGGESTED_COL] = sug
+    work_df[GROUP_COL] = grp
 
 
 # --------------------------------------------------------------------------- #
@@ -449,6 +456,7 @@ def run_rules_hybrid(
     engine: FillDownEngine,
     indices: Optional[List[int]] = None,
     client_id: Optional[str] = None,
+    progress_cb=None,
 ) -> Tuple[int, Dict[str, object]]:
     """Hybrid rule run: strict keyword rules first, then semantic propagation.
 
@@ -479,7 +487,7 @@ def run_rules_hybrid(
 
     # 2/3) Semantic propagation seeded from (existing coded ∪ rule-filled) rows.
     run_loaded = make_loaded_for_run(work_df, loaded, config)
-    result = engine.run(run_loaded)
+    result = engine.run(run_loaded, progress_cb=progress_cb)
     apply_run_result(work_df, result, loaded)
 
     # Re-stamp rule-filled rows: the engine saw them as seeds and relabelled
@@ -1085,7 +1093,8 @@ def suggested_notes_from_rows(work_df: pd.DataFrame, indices: List[int]) -> str:
 # --------------------------------------------------------------------------- #
 def commit_editor_changes(work_df: pd.DataFrame, edited: pd.DataFrame,
                           loaded: LoadedData, storage: Storage,
-                          config: Config) -> Dict[str, object]:
+                          config: Config,
+                          client_id: Optional[str] = None) -> Dict[str, object]:
     """Reconcile an edited page back into ``work_df`` (in place).
 
     ``edited`` is the dataframe returned by ``st.data_editor`` for the current
@@ -1148,7 +1157,7 @@ def commit_editor_changes(work_df: pd.DataFrame, edited: pd.DataFrame,
     # Learn manual target edits (after any sim_text recompute).
     if changed_targets:
         _learn_filled_rows(work_df, loaded, storage,
-                           only_engine="manual")
+                           only_engine="manual", client_id=client_id)
     return {
         "targets": changed_targets,
         "notes": changed_notes,
@@ -1180,8 +1189,15 @@ def _persist_changed_notes(work_df: pd.DataFrame, storage: Storage) -> None:
 
 def _learn_filled_rows(work_df: pd.DataFrame, loaded: LoadedData,
                        storage: Storage, indices: Optional[List[int]] = None,
-                       only_engine: Optional[str] = None) -> int:
-    """Record learned mappings + training examples for filled rows."""
+                       only_engine: Optional[str] = None,
+                       client_id: Optional[str] = None) -> int:
+    """Record learned mappings + training examples for filled rows.
+
+    Every row flows through :func:`record_human_approval` — the single
+    learning path (mapping + training example + account-profile reinforcement).
+    """
+    from src.rules_manager import record_human_approval
+
     na_col = loaded.new_account_col
     if SIM_TEXT_COL not in work_df.columns:
         return 0
@@ -1197,10 +1213,9 @@ def _learn_filled_rows(work_df: pd.DataFrame, loaded: LoadedData,
         code = str(work_df.at[idx, na_col] or "").strip()
         sig = str(work_df.at[idx, SIM_TEXT_COL] or "").strip()
         if code and sig:
-            storage.upsert_learned_mapping(sig, code)
-            storage.add_training_example(
-                text=sig, label=code, confidence=1.0,
-                engine_used="manual_edit")
+            record_human_approval(storage, sig, code, confidence=1.0,
+                                  engine_used="manual_edit",
+                                  client_id=client_id)
             learned += 1
     return learned
 
@@ -1241,6 +1256,7 @@ def clear_spreadsheet_values(work_df: pd.DataFrame, loaded: LoadedData,
     work_df[ACTION_COL] = ""
     work_df[WHY_COL] = ""
     work_df[SUGGESTED_COL] = ""
+    work_df[GROUP_COL] = ""
     work_df[SELECT_COL] = False
     # Rebuild _sim_text so the cleared notes no longer influence matching.
     recompute_sim_text(work_df, loaded.text_columns, config)
@@ -1272,6 +1288,7 @@ def reset_automation(work_df: pd.DataFrame, loaded: LoadedData,
     act = work_df[ACTION_COL].tolist()
     why = work_df[WHY_COL].tolist()
     sug = work_df[SUGGESTED_COL].tolist()
+    grp = work_df[GROUP_COL].tolist()
 
     cleared = 0
     for i in range(len(work_df)):
@@ -1286,6 +1303,7 @@ def reset_automation(work_df: pd.DataFrame, loaded: LoadedData,
         act[i] = ""
         why[i] = ""
         sug[i] = ""
+        grp[i] = ""
         if had_output:
             cleared += 1
 
@@ -1295,16 +1313,22 @@ def reset_automation(work_df: pd.DataFrame, loaded: LoadedData,
     work_df[ACTION_COL] = act
     work_df[WHY_COL] = why
     work_df[SUGGESTED_COL] = sug
+    work_df[GROUP_COL] = grp
     clear_selection(work_df)
     return cleared
 
 
 def approve_rows(work_df: pd.DataFrame, loaded: LoadedData, storage: Storage,
-                 config: Config, indices: Optional[List[int]] = None) -> Dict[str, int]:
+                 config: Config, indices: Optional[List[int]] = None,
+                 client_id: Optional[str] = None) -> Dict[str, int]:
     """Approve rows: fill from suggestion if blank, learn, and mark resolved.
 
-    If ``indices`` is None, approves the current selection. Returns counts.
+    If ``indices`` is None, approves the current selection. Every approval
+    becomes memory (learned mapping), training data and account-knowledge
+    reinforcement via :func:`record_human_approval`. Returns counts.
     """
+    from src.rules_manager import record_human_approval
+
     ensure_state_columns(work_df)
     recompute_sim_text(work_df, loaded.text_columns, config)
     na_col = loaded.new_account_col
@@ -1329,9 +1353,8 @@ def approve_rows(work_df: pd.DataFrame, loaded: LoadedData, storage: Storage,
         applied += 1
         sig = str(work_df.at[idx, SIM_TEXT_COL] or "").strip()
         if sig:
-            storage.upsert_learned_mapping(sig, value)
-            storage.add_training_example(
-                text=sig, label=value, confidence=1.0, engine_used="approved")
+            record_human_approval(storage, sig, value, confidence=1.0,
+                                  engine_used="approved", client_id=client_id)
             learned += 1
     clear_selection(work_df)
     return {"applied": applied, "learned": learned}
@@ -1356,6 +1379,429 @@ def set_target_for_rows(work_df: pd.DataFrame, indices: List[int], code: str,
 
 
 # --------------------------------------------------------------------------- #
+# Review workspace (group-first, bulk-safe human review)
+# --------------------------------------------------------------------------- #
+def _review_display_columns(work_df: pd.DataFrame, loaded: LoadedData) -> List[str]:
+    """User-facing context columns for the review table (those that exist)."""
+    wanted = ["Name", "Payee", "Vendor", "Memo", "Description", "Amount",
+              "Date"]
+    cols = [c for c in wanted if c in work_df.columns]
+    if not cols:
+        cols = [c for c in loaded.text_columns if c in work_df.columns]
+    return cols
+
+
+def review_rows_df(work_df: pd.DataFrame, loaded: LoadedData,
+                   include_no_match: bool = False) -> pd.DataFrame:
+    """Build the review workspace table straight from ``work_df``.
+
+    Contains ONLY rows that need a human: ``filled_review`` + ``needs_review``
+    (optionally ``no_match``). Sorted least-confident first, then by group, so
+    the riskiest rows are at the top and look-alikes sit together. Each row
+    carries the suggested code, the current code, confidence, engine, a
+    plain-English why and an editable ``New Account`` + ``Approve`` pair.
+    """
+    ensure_state_columns(work_df)
+    na_col = loaded.new_account_col
+    actions = {FillAction.FILLED_REVIEW.value, FillAction.NEEDS_REVIEW.value}
+    if include_no_match:
+        actions.add(FillAction.NO_MATCH.value)
+    mask = work_df[ACTION_COL].astype(str).isin(actions)
+    idxs = [int(i) for i in work_df.index[mask]]
+    if not idxs:
+        return pd.DataFrame()
+
+    text_cols = _review_display_columns(work_df, loaded)
+    records: List[Dict[str, object]] = []
+    for i in idxs:
+        row = work_df.loc[i]
+        rec: Dict[str, object] = {"row": i}
+        for c in text_cols:
+            rec[c] = row[c]
+        gid = row[GROUP_COL]
+        rec["Group"] = "" if str(gid).strip() in ("", "-1", "None") \
+            else f"#{int(gid)}"
+        current = str(row[na_col] or "").strip()
+        suggested = str(row[SUGGESTED_COL] or "").strip()
+        rec["Current"] = current
+        rec["Suggested"] = suggested
+        rec["New Account"] = current or suggested
+        rec["Confidence"] = round(float(row[CONF_COL] or 0.0), 3)
+        rec["Engine"] = friendly_engine(str(row[ENGINE_COL] or ""))
+        rec["Action"] = str(row[ACTION_COL] or "")
+        rec["Approve"] = str(row[ACTION_COL]) == FillAction.FILLED_REVIEW.value
+        rec["Why"] = str(row[WHY_COL] or "")
+        records.append(rec)
+
+    table = pd.DataFrame(records)
+    order = (["row"] + text_cols +
+             ["Group", "Current", "Suggested", "New Account", "Confidence",
+              "Engine", "Action", "Approve", "Why"])
+    table = table[[c for c in order if c in table.columns]]
+    sort_cols = ["Confidence"] + (["Group"] if "Group" in table.columns else [])
+    if text_cols:
+        sort_cols.append(text_cols[0])
+    return table.sort_values(by=sort_cols, kind="stable").reset_index(drop=True)
+
+
+def apply_review_table(work_df: pd.DataFrame, loaded: LoadedData,
+                       storage: Storage, edited: pd.DataFrame,
+                       client_id: Optional[str] = None) -> Dict[str, int]:
+    """Apply an edited review-workspace table back onto ``work_df``.
+
+    Approved rows with a value are written, stamped as user-owned
+    (``engine=manual`` / ``kept_seed``) and learned through the single learning
+    path. Approved rows left blank are cleared. Nothing is persisted for rows
+    the user did not explicitly approve.
+    """
+    from src.rules_manager import record_human_approval
+
+    ensure_state_columns(work_df)
+    na_col = loaded.new_account_col
+    counts = {"applied": 0, "learned": 0, "cleared": 0}
+    if edited is None or edited.empty or "row" not in edited.columns:
+        return counts
+
+    for _, row in edited.iterrows():
+        try:
+            idx = int(row["row"])
+        except (TypeError, ValueError):
+            continue
+        if idx not in work_df.index:
+            continue
+        if not bool(row.get("Approve", False)):
+            continue
+        raw = str(row.get("New Account", "")).strip()
+        value = normalize_code(raw) if raw else ""
+        current = str(work_df.at[idx, na_col] or "").strip()
+        if value:
+            if value != current:
+                work_df.at[idx, na_col] = value
+                counts["applied"] += 1
+            work_df.at[idx, ACTION_COL] = FillAction.KEPT_SEED.value
+            work_df.at[idx, CONF_COL] = 1.0
+            work_df.at[idx, ENGINE_COL] = "manual"
+            work_df.at[idx, WHY_COL] = "Approved by you in review."
+            sig = str(work_df.at[idx, SIM_TEXT_COL] or "").strip()
+            if sig:
+                record_human_approval(
+                    storage, sig, value,
+                    confidence=_safe_float(row.get("Confidence"), 1.0),
+                    engine_used="review", client_id=client_id)
+                counts["learned"] += 1
+        elif current and str(work_df.at[idx, ENGINE_COL]) \
+                not in _PROTECTED_ENGINES:
+            work_df.at[idx, na_col] = ""
+            work_df.at[idx, ACTION_COL] = ""
+            work_df.at[idx, CONF_COL] = 0.0
+            work_df.at[idx, ENGINE_COL] = ""
+            counts["cleared"] += 1
+    return counts
+
+
+def _safe_float(value, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def group_review_summary(work_df: pd.DataFrame, loaded: LoadedData,
+                         high_cutoff: float = 0.85) -> List[Dict[str, object]]:
+    """First-class similarity-group cards for the review workspace.
+
+    One entry per group that still has rows needing review: how many rows, the
+    consensus suggested code (or the split when rows disagree), how many are
+    high confidence, and a sample of the transaction text.
+    """
+    ensure_state_columns(work_df)
+    na_col = loaded.new_account_col
+    review_actions = {FillAction.FILLED_REVIEW.value,
+                      FillAction.NEEDS_REVIEW.value}
+    mask = work_df[ACTION_COL].astype(str).isin(review_actions)
+    groups: Dict[int, Dict[str, object]] = {}
+    text_cols = _review_display_columns(work_df, loaded)
+    for i in work_df.index[mask]:
+        gid = work_df.at[i, GROUP_COL]
+        if str(gid).strip() in ("", "-1", "None"):
+            continue
+        gid = int(gid)
+        g = groups.setdefault(gid, {"group_id": gid, "indices": [],
+                                    "codes": {}, "confs": [], "sample": ""})
+        g["indices"].append(int(i))
+        suggested = (str(work_df.at[i, SUGGESTED_COL] or "").strip()
+                     or str(work_df.at[i, na_col] or "").strip())
+        if suggested:
+            g["codes"][suggested] = g["codes"].get(suggested, 0) + 1
+        g["confs"].append(float(work_df.at[i, CONF_COL] or 0.0))
+        if not g["sample"] and text_cols:
+            g["sample"] = " | ".join(
+                str(work_df.at[i, c] or "").strip() for c in text_cols[:2]
+                if str(work_df.at[i, c] or "").strip())[:90]
+
+    out: List[Dict[str, object]] = []
+    for g in groups.values():
+        codes = g["codes"]
+        top_code, top_n = ("", 0)
+        if codes:
+            top_code, top_n = sorted(codes.items(),
+                                     key=lambda kv: (-kv[1], kv[0]))[0]
+        confs = g["confs"]
+        out.append({
+            "group_id": g["group_id"],
+            "indices": g["indices"],
+            "rows": len(g["indices"]),
+            "suggested": top_code,
+            "codes": dict(codes),
+            "split": len(codes) > 1,
+            "high_conf": sum(1 for c in confs if c >= high_cutoff),
+            "avg_confidence": round(sum(confs) / len(confs), 3) if confs else 0.0,
+            "sample": g["sample"],
+        })
+    out.sort(key=lambda g: (-g["rows"], g["group_id"]))
+    return out
+
+
+def approve_similarity_group(work_df: pd.DataFrame, loaded: LoadedData,
+                             storage: Storage, config: Config, group_id: int,
+                             client_id: Optional[str] = None) -> Dict[str, object]:
+    """One-click approve of a whole similarity group at its consensus code.
+
+    Fills **blank rows only** — a row that already carries a code is never
+    touched. When the group's rows suggest two different codes the group is
+    *split*: nothing is approved and the split is reported so the user can
+    pick a code explicitly.
+    """
+    from src.rules_manager import record_human_approval
+
+    ensure_state_columns(work_df)
+    recompute_sim_text(work_df, loaded.text_columns, config)
+    na_col = loaded.new_account_col
+    summary = next((g for g in group_review_summary(work_df, loaded)
+                    if g["group_id"] == int(group_id)), None)
+    if summary is None:
+        return {"approved": 0, "learned": 0, "split": {}, "code": ""}
+    if summary["split"]:
+        return {"approved": 0, "learned": 0, "split": summary["codes"],
+                "code": ""}
+
+    code = normalize_code(summary["suggested"])
+    if not code:
+        return {"approved": 0, "learned": 0, "split": {}, "code": ""}
+
+    approved = 0
+    learned = 0
+    for idx in summary["indices"]:
+        if idx not in work_df.index:
+            continue
+        if str(work_df.at[idx, na_col] or "").strip():
+            continue  # never overwrite an existing code
+        work_df.at[idx, na_col] = code
+        work_df.at[idx, ACTION_COL] = FillAction.KEPT_SEED.value
+        work_df.at[idx, CONF_COL] = 1.0
+        work_df.at[idx, ENGINE_COL] = "manual"
+        work_df.at[idx, WHY_COL] = (f"Approved with group #{int(group_id)} "
+                                    f"-> {code}.")
+        approved += 1
+        sig = str(work_df.at[idx, SIM_TEXT_COL] or "").strip()
+        if sig:
+            record_human_approval(storage, sig, code, confidence=1.0,
+                                  engine_used="group_approve",
+                                  client_id=client_id)
+            learned += 1
+    return {"approved": approved, "learned": learned, "split": {},
+            "code": code}
+
+
+def reject_rows(work_df: pd.DataFrame, loaded: LoadedData, storage: Storage,
+                indices: List[int],
+                client_id: Optional[str] = None) -> Dict[str, int]:
+    """Reject suggestions: leave the row blank and do NOT learn the pairing.
+
+    The rejected (signature, code) pair is recorded as *blocked* so the same
+    bad suggestion does not keep coming back on future runs. Rows the user
+    owns (upload seeds / manual edits) are never cleared.
+    """
+    ensure_state_columns(work_df)
+    na_col = loaded.new_account_col
+    rejected = 0
+    blocked = 0
+    for idx in indices:
+        if idx not in work_df.index:
+            continue
+        engine = str(work_df.at[idx, ENGINE_COL] or "").strip()
+        suggested = str(work_df.at[idx, SUGGESTED_COL] or "").strip()
+        current = str(work_df.at[idx, na_col] or "").strip()
+        # The pairing being rejected: the suggestion, else the engine's fill.
+        rejected_code = suggested or (current if engine not in
+                                      _PROTECTED_ENGINES else "")
+        sig = str(work_df.at[idx, SIM_TEXT_COL] or "").strip()
+        if sig and rejected_code:
+            storage.block_mapping(sig, normalize_code(rejected_code),
+                                  client_id=client_id)
+            blocked += 1
+        if engine not in _PROTECTED_ENGINES:
+            work_df.at[idx, na_col] = ""
+        work_df.at[idx, SUGGESTED_COL] = ""
+        work_df.at[idx, ACTION_COL] = ""
+        work_df.at[idx, ENGINE_COL] = ""
+        work_df.at[idx, CONF_COL] = 0.0
+        work_df.at[idx, WHY_COL] = "Rejected by you — left blank."
+        rejected += 1
+    return {"rejected": rejected, "blocked": blocked}
+
+
+def apply_suggested_to_rows(work_df: pd.DataFrame, loaded: LoadedData,
+                            storage: Storage, indices: List[int],
+                            client_id: Optional[str] = None) -> Dict[str, int]:
+    """Write each row's suggested code into New Account (blank rows only)."""
+    from src.rules_manager import record_human_approval
+
+    ensure_state_columns(work_df)
+    na_col = loaded.new_account_col
+    applied = 0
+    learned = 0
+    for idx in indices:
+        if idx not in work_df.index:
+            continue
+        if str(work_df.at[idx, na_col] or "").strip():
+            continue  # never overwrite
+        suggested = str(work_df.at[idx, SUGGESTED_COL] or "").strip()
+        if not suggested:
+            continue
+        code = normalize_code(suggested)
+        work_df.at[idx, na_col] = code
+        work_df.at[idx, ACTION_COL] = FillAction.KEPT_SEED.value
+        work_df.at[idx, CONF_COL] = 1.0
+        work_df.at[idx, ENGINE_COL] = "manual"
+        work_df.at[idx, WHY_COL] = "Suggested code applied by you."
+        applied += 1
+        sig = str(work_df.at[idx, SIM_TEXT_COL] or "").strip()
+        if sig:
+            record_human_approval(storage, sig, code, confidence=1.0,
+                                  engine_used="review_apply",
+                                  client_id=client_id)
+            learned += 1
+    return {"applied": applied, "learned": learned}
+
+
+def recode_rows(work_df: pd.DataFrame, loaded: LoadedData, storage: Storage,
+                indices: List[int], code: str,
+                client_id: Optional[str] = None,
+                overwrite_engine: bool = False) -> Dict[str, int]:
+    """Bulk-recode rows to a typed account code.
+
+    **Never overwrites an existing code by default** — blank rows are coded,
+    non-blank rows are reported as ``skipped_protected``. With
+    ``overwrite_engine=True`` (an explicit user choice) rows filled by an
+    *automation* engine may be re-coded too, but upload seeds and manual edits
+    stay sacred either way. Every written row is learned (last human write
+    wins for its learned mapping).
+    """
+    from src.rules_manager import record_human_approval
+
+    ensure_state_columns(work_df)
+    na_col = loaded.new_account_col
+    code = normalize_code(code) if str(code).strip() else ""
+    recoded = 0
+    learned = 0
+    skipped = 0
+    if not code:
+        return {"recoded": 0, "learned": 0, "skipped_protected": len(indices)}
+    for idx in indices:
+        if idx not in work_df.index:
+            continue
+        existing = str(work_df.at[idx, na_col] or "").strip()
+        if existing:
+            engine = str(work_df.at[idx, ENGINE_COL] or "").strip()
+            if engine in _PROTECTED_ENGINES or not overwrite_engine:
+                skipped += 1
+                continue
+            if normalize_code(existing) == code:
+                continue  # no change
+        work_df.at[idx, na_col] = code
+        work_df.at[idx, ACTION_COL] = FillAction.KEPT_SEED.value
+        work_df.at[idx, CONF_COL] = 1.0
+        work_df.at[idx, ENGINE_COL] = "manual"
+        work_df.at[idx, WHY_COL] = "Re-coded by you."
+        recoded += 1
+        sig = str(work_df.at[idx, SIM_TEXT_COL] or "").strip()
+        if sig:
+            record_human_approval(storage, sig, code, confidence=1.0,
+                                  engine_used="recode", client_id=client_id)
+            learned += 1
+    return {"recoded": recoded, "learned": learned, "skipped_protected": skipped}
+
+
+# --------------------------------------------------------------------------- #
+# Learned-memory run modes (deterministic, auditable)
+# --------------------------------------------------------------------------- #
+def run_learned_memory(work_df: pd.DataFrame, loaded: LoadedData,
+                       storage: Storage, config: Config,
+                       indices: Optional[List[int]] = None,
+                       client_id: Optional[str] = None) -> int:
+    """Fill blank rows from learned exact-match memory only.
+
+    Deterministic and auditable: a row is filled only when its exact text
+    signature was approved before (and the pairing was not later rejected).
+    Existing values are never overwritten. Returns the number of fills.
+    """
+    ensure_state_columns(work_df)
+    recompute_sim_text(work_df, loaded.text_columns, config)
+    na_col = loaded.new_account_col
+    lookup = storage.get_learned_lookup(client_id=client_id)
+    if not lookup:
+        return 0
+    blocked = storage.get_blocked_lookup(client_id=client_id)
+    if indices is None:
+        indices = list(work_df.index)
+
+    filled = 0
+    for idx in indices:
+        if idx not in work_df.index:
+            continue
+        if str(work_df.at[idx, na_col] or "").strip():
+            continue  # never overwrite
+        sig = str(work_df.at[idx, SIM_TEXT_COL] or "").strip()
+        if not sig or sig not in lookup:
+            continue
+        code = normalize_code(lookup[sig])
+        if code in blocked.get(sig, set()):
+            continue
+        work_df.at[idx, na_col] = code
+        work_df.at[idx, CONF_COL] = config.confidence.learned_match_confidence
+        work_df.at[idx, ENGINE_COL] = "learned"
+        work_df.at[idx, ACTION_COL] = FillAction.AUTO_FILLED.value
+        work_df.at[idx, WHY_COL] = ("Learned exact match — you approved this "
+                                    "transaction before.")
+        filled += 1
+    return filled
+
+
+def run_rules_plus_memory(work_df: pd.DataFrame, rules_manager: RulesManager,
+                          loaded: LoadedData, config: Config,
+                          indices: Optional[List[int]] = None,
+                          client_id: Optional[str] = None) -> Tuple[int, Dict[str, object]]:
+    """Strict keyword rules first, then learned exact-match memory.
+
+    Both layers are deterministic and blank-only — no similarity, no ML. The
+    audit is the strict-rule audit plus the memory fills, so the UI can show
+    exactly which layer filled what.
+    """
+    applied, results = run_selected_rules_audited(
+        work_df, rules_manager, loaded, config, indices=indices,
+        client_id=client_id)
+    audit = pure_rule_audit(results, config)
+    memory_filled = run_learned_memory(
+        work_df, loaded, rules_manager.storage, config, indices=indices,
+        client_id=client_id)
+    audit["mode"] = "rules+memory"
+    audit["memory_filled"] = memory_filled
+    audit["scoped"] = bool(indices)
+    return applied + memory_filled, audit
+
+
+# --------------------------------------------------------------------------- #
 # Filters, metrics, pagination
 # --------------------------------------------------------------------------- #
 REVIEW_ACTIONS = {FillAction.FILLED_REVIEW.value, FillAction.NEEDS_REVIEW.value}
@@ -1373,6 +1819,10 @@ def filter_mask(work_df: pd.DataFrame, mode: str,
         return na == ""
     if mode == "Filled only":
         return na != ""
+    if mode == "Filled by rules":
+        return work_df[ENGINE_COL].astype(str) == "rules"
+    if mode == "Filled by memory":
+        return work_df[ENGINE_COL].astype(str) == "learned"
     return pd.Series(True, index=work_df.index)
 
 
@@ -1552,7 +2002,7 @@ def editor_columns(loaded: LoadedData, work_df: pd.DataFrame) -> List[str]:
 # Undo / redo (snapshots of the mutable columns)
 # --------------------------------------------------------------------------- #
 _SNAPSHOT_COLS = [NEW_ACCOUNT_COL, RULE_NOTES_COL, CONF_COL, ENGINE_COL,
-                  ACTION_COL, WHY_COL, SUGGESTED_COL, SIM_TEXT_COL]
+                  ACTION_COL, WHY_COL, SUGGESTED_COL, GROUP_COL, SIM_TEXT_COL]
 
 
 def snapshot(work_df: pd.DataFrame) -> Dict[str, list]:

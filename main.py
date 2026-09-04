@@ -90,7 +90,7 @@ if not _dep_status.core_ok:
     st.stop()
 
 # Core deps are present — safe to import the rest of the app.
-from ui import common, landing, panels, sidebar, spreadsheet  # noqa: E402
+from ui import common, landing, panels, review, sidebar, spreadsheet  # noqa: E402
 from ui import guide  # noqa: E402  (isolated, additive User Guide page)
 
 config, storage, rules_manager, model_manager, logger = common.services()
@@ -141,6 +141,8 @@ _view = st.session_state.get("view", "landing")
 # spreadsheet is never taken over.
 if _view == "spreadsheet" and st.session_state.get("work_df") is not None:
     spreadsheet.render_spreadsheet()
+elif _view == "review" and st.session_state.get("work_df") is not None:
+    review.render_review()
 else:
     landing.render_landing()
 
