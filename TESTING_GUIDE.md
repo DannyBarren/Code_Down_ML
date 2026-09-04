@@ -1,0 +1,131 @@
+# Testing Guide — Code_Down_ML
+
+This guide covers (1) the automated test suite, (2) a manual test matrix for the
+spreadsheet-dominant UI, and (3) a one-page **Demo Script** for the presentation.
+
+---
+
+## 1 · Environment
+
+```bash
+# From the project root
+python3 -m venv .venv            # create an isolated environment
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt  # core engine
+pip install pytest               # test runner
+# Optional (heavy): best-accuracy semantic AI + SetFit
+# pip install -r requirements-semantic.txt
+```
+
+> The app and tests run fine on the **core** stack alone (TF-IDF matcher). The
+> semantic/SetFit add-ons are optional and the app falls back automatically.
+
+---
+
+## 2 · Automated tests (run after every change)
+
+```bash
+pytest tests/ -q          # unit + integration + headless UI e2e
+python smoke_test.py      # non-Streamlit end-to-end smoke (happy path + edges)
+```
+
+What's covered:
+
+| Suite | File | Focus |
+|-------|------|-------|
+| Data loader | `tests/test_data_loader.py` | header resolution, code normalisation, `_sim_text` |
+| Engine | `tests/test_fill_down_engine.py` | seed/rule/learned/similarity decision priority |
+| ML layer | `tests/test_ml_classifier.py` | hybrid/prefer-ml modes, fallbacks |
+| Review/export | `tests/test_review_and_export.py` | apply reviews, CSV/Excel exports |
+| Rules / codes | `tests/test_rules_manager.py`, `tests/test_account_codes.py` | matching, suffix normalization |
+| **Spreadsheet helpers** | `tests/test_spreadsheet_helpers.py` | `work_df` build, Rule-Notes folding + persistence, runs, manual edits, bulk approve, rule preview, filters, pagination, undo/redo |
+| **UI e2e** | `tests/test_e2e_v22.py` | headless `AppTest`: landing → load sample → spreadsheet → full run → filters/pagination → modal panels → export modal → undo |
+
+> `tests/test_e2e_v22.py` and the bootstrap honour `FILLDOWN_DB_PATH`, so tests
+> use a throwaway SQLite file and never touch the shipped `data/fill_down.db`.
+
+Expected result: **all tests pass** and `smoke_test.py` prints
+`ALL SMOKE TESTS PASSED ✅`.
+
+---
+
+## 3 · Manual test matrix (browser)
+
+Launch with `streamlit run main.py`. Tip: use a clean DB with
+`FILLDOWN_DB_PATH=/tmp/demo.db streamlit run main.py`.
+
+### Happy path
+1. **Landing** → enter a client name → **Load sample data & start**. ✅ App opens
+   directly in the spreadsheet; metrics + progress bar populate.
+2. Click **🚀 Full Intelligent Run**. ✅ Codes fill in; **Confidence** bars and
+   **How decided** appear; toast/flash summarises the run.
+3. **View → Review only**. ✅ Only flagged rows show. Edit a **Target Account**
+   cell (e.g. `6100 a`). ✅ It normalises to `6100A` on commit.
+4. Tick a few **✓** boxes → **Approve Selected**. ✅ Rows resolve; "Examples"
+   metric rises (the tool learned them).
+5. **✨ Create Rule from Selection** (select a vendor's rows first). ✅ Keyword +
+   Rule Notes pre-fill; **Rows affected** preview updates live; *Create rule &
+   apply* fills matching rows and persists the rule.
+6. **📤 Export** (toolbar). ✅ A modal opens *over* the grid; three downloads
+   build; open the Excel — original formatting kept + a **Code Down Summary**
+   tab; the exported CSV has no `_`-prefixed columns. Closing returns to the
+   spreadsheet.
+7. **⚙️ Rules / 🧠 Models / 🕘 History** (sidebar). ✅ Each opens as a **modal**;
+   the spreadsheet stays visible underneath and is never replaced.
+8. **Suggested rules (seeding workflow).** Code a few blank rows by typing a
+   Target Account. ✅ A **💡 banner** appears ("turn coded rows into N rules").
+   Open **⚙️ Rules** → the **Suggested rules** table lists keyword → code with a
+   "rows it would fill" count. Tick some → **Create selected rule(s)**. ✅ Rules
+   are created; running them fills the look-alike rows.
+9. **Engine status.** Sidebar **🧩 Engine status** shows three lines —
+   **Core / Semantic / SetFit** — with **⬇️ Install missing AI engines** when any
+   optional engine is absent. ✅ The terminal prints a startup banner listing
+   exactly what loaded.
+
+### Edge cases
+- **Missing columns:** upload a CSV with **no** `New Account` column. ✅ A
+  Target Account column is created automatically; a Rule Notes column appears.
+- **No seeds:** upload a file with all codes blank. ✅ Run still works via rules /
+  learned memory; unmatched rows stay blank (no crash).
+- **Large file:** load 5k–20k rows. ✅ Pagination controls appear; switching
+  pages and filters stays responsive; edits on one page survive page changes.
+- **Rule Notes persistence:** add a note, run, re-upload the *same* file. ✅ The
+  note re-appears on the matching row (matched by base signature).
+- **Undo/redo:** after a run or bulk approve, click **↩️ Undo** then **↪️ Redo**.
+  ✅ Target Account / Rule Notes revert and re-apply.
+- **Refresh:** reload the browser tab. ✅ Rules, learned mappings, saved Rule
+  Notes and run history persist (they live in SQLite). *In-session undo history
+  and the loaded file are not restored — re-open the file to continue.*
+
+---
+
+## 4 · One-page Demo Script (≈5 minutes)
+
+**Setup (before the room):** `FILLDOWN_DB_PATH=/tmp/demo.db streamlit run main.py`,
+browser open on the dashboard, sidebar visible.
+
+1. **The problem (15s).** "Classifying a transaction export into the right account
+   codes is hours of manual copy-paste in Excel. Watch this."
+2. **Land + load (20s).** Type a client name → **Load sample data & start**.
+   "One screen — a real spreadsheet. 220 transactions, a few already coded as
+   examples."
+3. **One click (30s).** **🚀 Full Intelligent Run**. "It grouped look-alike
+   transactions and filled the **Target Account** codes — with a confidence bar
+   and a plain-English reason on every row."
+4. **Stay in control (45s).** **View → Review only**. "It only asks about what
+   it's unsure of." Fix one code by typing it; tick two more → **Approve
+   Selected**. "Notice 'Examples learned' just went up — it's getting smarter."
+5. **Teach a rule (45s).** Select a vendor's rows → **✨ Create Rule from
+   Selection**. "Pre-filled keyword, and a **live preview**: this rule will
+   touch *N* rows." Save. "That rule is now permanent for every future file."
+6. **Rule Notes = data asset (30s).** Add a Rule Note on a tricky row. "These
+   hints improve the matching **and** are remembered next time we get a similar
+   file — turning clean-up into compounding intelligence."
+7. **Deliver (30s).** **📤 Export** → Excel keeps their formatting + a summary
+   tab; CSV is ready to import. "Audit-friendly, and done in minutes."
+8. **Close (15s).** "Reliable from day one with the built-in matcher; an optional
+   AI model trains on your approvals and takes over as confidence grows. You are
+   always in control."
+
+**If asked about reliability:** "73 automated tests, including a headless run of
+the real UI, plus an end-to-end smoke test — all green."

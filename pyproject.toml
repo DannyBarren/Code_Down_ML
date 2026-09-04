@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "code-down-ml"
+version = "1.0.0"
+description = "Code_Down_ML v1.0. Propagate account/category codes to similar transactions with a layered engine (keyword rules + learned memory + similarity + trainable ML)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Danny Barren" }]
+keywords = ["automation", "classification", "machine-learning", "streamlit", "setfit", "transactions"]
+
+dependencies = [
+    "pandas>=2.1.0",
+    "numpy>=1.26.0",
+    "openpyxl>=3.1.2",
+    "streamlit>=1.32.0",
+    "pydantic>=2.6.0",
+    "PyYAML>=6.0.1",
+    "structlog>=24.1.0",
+    "scikit-learn>=1.4.0",
+]
+
+[project.optional-dependencies]
+# Best-accuracy semantic matching + the optional SetFit trainable model.
+semantic = [
+    "sentence-transformers>=2.5.0",
+    "torch>=2.0.0",
+    "setfit>=1.0.0",
+]
+# Test / development tooling.
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+code-down = "cli:main"
+
+[tool.setuptools]
+py-modules = ["main", "cli", "smoke_test"]
+
+[tool.setuptools.packages.find]
+include = ["src*", "utils*", "models*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

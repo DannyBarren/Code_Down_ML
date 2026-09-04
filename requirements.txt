@@ -1,0 +1,29 @@
+# =============================================================================
+# Core dependencies – everything the app needs to run with the fast,
+# built-in TF-IDF matcher. Light and quick to install.
+# =============================================================================
+
+# Data handling
+pandas>=2.1.0
+numpy>=1.26.0
+openpyxl>=3.1.2
+
+# UI
+streamlit>=1.32.0
+
+# Config & data models
+pydantic>=2.6.0
+PyYAML>=6.0.1
+
+# Logging
+structlog>=24.1.0
+
+# Machine learning / similarity (TF-IDF + clustering)
+scikit-learn>=1.4.0
+
+# -----------------------------------------------------------------------------
+# OPTIONAL: semantic AI matching (best accuracy). Heavier download (~hundreds
+# of MB). Install separately when you want it:
+#     pip install -r requirements-semantic.txt
+# The app automatically falls back to TF-IDF if these are not present.
+# -----------------------------------------------------------------------------

@@ -1,0 +1,25 @@
+# Code_Down_ML — basic dark theme + server settings.
+# Users can switch System / Light / Dark via the top-right menu -> Settings.
+
+[theme]
+base = "dark"
+primaryColor = "#2b8cff"
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#161b22"
+textColor = "#e6edf3"
+font = "sans serif"
+
+[server]
+headless = true
+address = "0.0.0.0"
+port = 8501
+enableCORS = false
+enableXsrfProtection = false
+maxUploadSize = 50
+
+[browser]
+gatherUsageStats = false
+
+[client]
+showErrorDetails = true
+toolbarMode = "viewer"
