@@ -64,6 +64,8 @@ def render_spreadsheet() -> None:
     rc.render_memory_bootstrap_banner(work, loaded, rules, storage, config)
     rc.render_ingest_banner(work, loaded, rules, storage, config)
     rc.render_seed_suggestion_banner(work, loaded, rules)
+    from ui import panels
+    panels.render_auto_train_banner()
     _render_run_metrics(work, loaded, counts)
     _render_rule_audit(work, loaded)
 
@@ -481,7 +483,7 @@ def _render_matched_raw(work, loaded, audit: dict) -> None:
 # Header + metrics + incentive
 # --------------------------------------------------------------------------- #
 def _engine_status_text() -> str:
-    """Compact 'what's loaded' chip for the spreadsheet header."""
+    """Compact, honest 'what's loaded' chip for the spreadsheet header."""
     from src.ml_classifier import setfit_available
     from src.similarity import semantic_backend_available
 
@@ -493,7 +495,7 @@ def _engine_status_text() -> str:
     if mm.has_model():
         ml = "SetFit + LogReg" if sf_ok else "LogReg"
     else:
-        ml = "warming up"
+        ml = "not trained — using rules + similarity"
     return f"Matching: {matching} · ML: {ml}"
 
 
@@ -1078,7 +1080,17 @@ def _export_dialog(work, loaded, counts: dict) -> None:
     result = st.session_state.get("last_result")
     backend = result.backend if result else ""
     mode = result.mode if result else ""
-    summary_df = common.export_summary_df(counts, loaded, backend, mode)
+    summary_df = common.export_summary_df(
+        counts, loaded, backend, mode, work=work,
+        audit=st.session_state.get("last_rule_audit"))
+
+    # Filenames carry the client + date so exports self-identify.
+    import re as _re
+    from datetime import datetime as _dt
+    client_slug = _re.sub(r"[^A-Za-z0-9]+", "_",
+                          st.session_state.get("client_name") or "").strip("_")
+    date_slug = _dt.now().strftime("%Y%m%d")
+    prefix = "_".join(p for p in (client_slug, stem, date_slug) if p)
 
     ext = st.session_state.get("original_ext")
     orig = st.session_state.get("original_bytes")
@@ -1099,16 +1111,16 @@ def _export_dialog(work, loaded, counts: dict) -> None:
 
         c1, c2, c3 = st.columns(3)
         c1.download_button(
-            label, data=xlsx, file_name=f"filled_{stem}.xlsx",
+            label, data=xlsx, file_name=f"filled_{prefix}.xlsx",
             mime="application/vnd.openxmlformats-officedocument."
                  "spreadsheetml.sheet", width="stretch")
         c2.download_button(
             "CSV (ready to import)", data=qb_bytes,
-            file_name=f"filled_{stem}_export.csv", mime="text/csv",
+            file_name=f"filled_{prefix}_export.csv", mime="text/csv",
             width="stretch")
         c3.download_button(
             "Excel (all columns + notes)", data=clean_bytes,
-            file_name=f"filled_{stem}_clean.xlsx",
+            file_name=f"filled_{prefix}_clean.xlsx",
             mime="application/vnd.openxmlformats-officedocument."
                  "spreadsheetml.sheet", width="stretch")
     except Exception as exc:  # noqa: BLE001

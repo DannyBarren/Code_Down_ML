@@ -5,7 +5,8 @@ the main area, and never touches the app's data, services, session logic or
 other views. It is shown as a full-page takeover (like the installer screen) and
 returns to the app via the "Back" button. Nothing else in the app is affected.
 
-Works in both light and dark themes (uses only theme-aware Streamlit widgets).
+One page, strict-first, written for accountants. Works in both light and dark
+themes (uses only theme-aware Streamlit widgets).
 """
 
 from __future__ import annotations
@@ -33,269 +34,148 @@ def is_open() -> bool:
 # Page
 # --------------------------------------------------------------------------- #
 def render_guide() -> None:
-    """Render the complete, non-technical user guide (full width)."""
+    """Render the complete guide as a single page."""
     top_l, top_r = st.columns([5, 1])
     with top_l:
-        st.title("📖 User Guide — Code_Down_ML")
-        st.caption("Transaction Classification · v1.0")
+        st.title("User Guide — Code_Down_ML")
+        st.caption("Code a week of transactions in minutes, and trust every "
+                   "fill.")
     with top_r:
         st.write("")
         st.button("← Back to app", width="stretch", key="guide_back_top",
                   on_click=close_guide)
 
     st.divider()
-
-    tabs = st.tabs([
-        "Welcome",
-        "Quick Start",
-        "How it Works",
-        "Review & Learning",
-        "Exports",
-        "Tips & Troubleshooting",
-        "Why It Matters",
-    ])
-
-    with tabs[0]:
-        _welcome()
-    with tabs[1]:
-        _quick_start()
-    with tabs[2]:
-        _how_it_works()
-    with tabs[3]:
-        _review_and_learning()
-    with tabs[4]:
-        _exports()
-    with tabs[5]:
-        _tips_and_troubleshooting()
-    with tabs[6]:
-        _business_value()
-
-    st.divider()
-    _legal()
+    _the_loop()
+    _run_modes()
+    _review()
+    _learning()
+    _export()
+    _rules_that_matter()
 
     st.divider()
     c1, c2 = st.columns([3, 1])
     with c1:
-        st.markdown(
-            "**Questions or ideas?** Open an issue on the GitHub repository: "
-            "https://github.com/DannyBarren/Code_Down_ML")
+        st.caption("Code_Down_ML • MIT License • © 2026 Danny Barren")
     with c2:
         st.button("← Back to app", width="stretch", key="guide_back_bottom",
                   on_click=close_guide)
 
 
-def _legal() -> None:
-    st.subheader("License ⚖️")
+def _the_loop() -> None:
+    st.subheader("The weekly loop")
     st.markdown(
         """
-**Copyright © 2026 Danny Barren.** Released under the **MIT License** — see the
-`LICENSE` file in the repository.
+1. **Upload** the client's AppFolio / QuickBooks export on the dashboard. Type
+   the client name first — rules and memory are kept per client.
+2. **Ingest coded examples** if the file has them. The banner offers to turn
+   pre-filled rows into exact-match rules in one click.
+3. **Run Rules — Strict** (the recommended button). Only your rules run, only
+   blank rows are filled, and every fill names the rule that made it.
+4. **Review the leftovers** in the Review workspace — grouped, least confident
+   first, one click per group.
+5. **Export.** Excel writes only the `New Account` column back into your
+   original workbook (formatting intact, plus a summary tab); the CSV is clean
+   and import-ready.
 
-- You may use, copy, modify and distribute this software.
-- The software is provided **"as-is"**, without warranty of any kind.
-- The bundled sample data is fictional and provided **"as-is"** for evaluation.
+Next week, same client: the rules and remembered codes are already loaded, so
+coverage jumps before you touch anything.
         """)
-    st.caption("Code_Down_ML • v1.0 • MIT License")
 
 
-# --------------------------------------------------------------------------- #
-# Sections
-# --------------------------------------------------------------------------- #
-def _welcome() -> None:
-    st.subheader("Welcome 👋")
+def _run_modes() -> None:
+    st.subheader("The four run buttons, in order of trust")
     st.markdown(
         """
-This tool takes one of the most tedious data tasks in any business —
-classifying every transaction to the right account or category — and does it for
-you in seconds, with you staying firmly in control.
+- **Run Rules — Strict ★ (recommended).** Deterministic. Fills a blank row
+  only when one of your keyword rules matches, with only that rule's code.
+  Already-coded rows are never touched. The audit panel shows exactly which
+  rule filled which row — and which rows no rule covered.
+- **Rules + Memory.** Strict rules, then exact matches you have approved
+  before. Still deterministic — no guessing.
+- **Rules + Similarity.** Rules first, then codes spread to look-alike
+  transactions with a confidence score. Broader; review the medium/low
+  confidence fills.
+- **Full Intelligent Run.** Adds the trained AI model on top. It can fill rows
+  no rule matched — that's why it's not the default. Anything the engines
+  disagree on, or the seeds split on, goes to Review instead of being silently
+  filled.
 
-You seed a few transactions with the correct **account / category code**, and the
-tool propagates those codes to every similar transaction, scores its confidence,
-explains its reasoning, and flags anything uncertain for a quick human review.
-
-**What it does for you**
-
-- ⏱️ **Saves hours** every cycle — no more manual search‑copy‑paste in Excel.
-- 🎯 **Classifies accurately** — it proposes a code *and* a confidence score for every row.
-- 🧠 **Learns from you** — every code you approve makes the next file faster and smarter.
-- 🔁 **Repeatable & auditable** — consistent results you can stand behind.
-
-**The big idea:** the more data you run through it, the smarter it gets — and the
-richer the insights you can surface about your operation.
+**Reset run** (toolbar → Reset) un-does the last automation pass and keeps
+your rules, Rule Notes and hand-typed codes.
         """)
-    st.info(
-        "You're always in charge. The tool *suggests*; you *approve*. Nothing is "
-        "finalized until you say so.")
 
 
-def _quick_start() -> None:
-    st.subheader("Quick Start (about 5 minutes) ⚡")
+def _review() -> None:
+    st.subheader("Review: where the leftovers get decided")
     st.markdown(
         """
-1. **Name the client / project** *(optional)* — on the dashboard, type a name.
-   This labels your exports and run history.
-2. **Upload the file** — drag in any transaction export (`.xlsx` or `.csv`). No
-   file handy? Click **Load sample dataset** to try it instantly.
-3. **Run the automation** — open the spreadsheet and choose:
-   - **Run Selected Rules** for a safe, predictable pass, **or**
-   - **Full Intelligent Run** to let the tool code everything it confidently can.
-4. **Review & approve** — scan the results. High-confidence rows are ready;
-   anything uncertain is flagged for a quick look. Approve what's correct.
-5. **Download** — click **Export** for a clean Excel (formatting preserved, plus a
-   summary tab) or a ready-to-import CSV.
+The **Review** workspace (sidebar) shows only rows that need you, least
+confident first. Each row tells you the code, the engine, the confidence and a
+one-line why — *"Matched rule #14 'Cunningham' (contains) → 6322"*.
 
-That's it — a file that used to take an hour is done in minutes.
+- **Groups.** Look-alike transactions cluster. A group with one suggested code
+  approves in one click. A split group (two codes) is never one-click
+  approved — you pick.
+- **Bulk.** Approve everything visible, or everything above a confidence
+  cutoff. Select rows in the grid to apply suggestions, re-code, or reject
+  them in bulk.
+- **The table.** Tick **Approve** on as many rows as you like, fix a code by
+  typing over it, then click **Apply approved** once. No per-row waiting.
+- **Reject** leaves the row blank and blocks that suggestion from coming back.
+
+Every approval is remembered immediately — as an exact-match mapping and as
+training data for the model.
         """)
-    st.caption("📸 Screenshot placeholder: the dashboard with the project name "
-               "field and the upload box.")
 
 
-def _how_it_works() -> None:
-    st.subheader("How the matching works (in plain English) 🛠️")
-
-    st.markdown("#### Rule-driven runs — safe and predictable")
+def _learning() -> None:
+    st.subheader("How it learns (and how to stay in charge)")
     st.markdown(
         """
-A **rule** is a simple shortcut you control: *"whenever you see this word, use
-this code."* For example, **`Cloud Hosting → 6100`**.
-
-- Rules run **first** and are **deterministic** — same input, same result.
-- A rule only ever touches rows it actually matches; it **never overwrites** a
-  value you typed or a code you already approved.
-- Rules are saved and reused on **every future file** — so you teach the tool a
-  recurring vendor once, and benefit forever.
+- **Learned memory** is exact: approve "Cunningham Communications → 6322"
+  once, and the next identical transaction codes itself.
+- **Rules always win** over memory. If a newer rule disagrees with an old
+  memory, the row's *why* says so.
+- **Re-code freely.** Your latest decision replaces the old mapping.
+- **The Models panel** shows what the tool remembers for this client, when it
+  last trained, and its held-out accuracy. Delete a bad mapping there and it
+  stops firing immediately. After every 25 new approvals a banner offers a
+  one-second retrain — training is never silent.
+- **Similarity leads early.** The model starts voting alongside similarity at
+  ~300 approvals and leads after ~1,500. That's deliberate: it earns trust
+  before it leads.
         """)
-    st.success("Think of rules as your safety net: precise, repeatable, and fully "
-               "under your control.")
 
-    st.markdown("#### Intelligent Mode — smarter matching when you want it")
+
+def _export() -> None:
+    st.subheader("Export")
     st.markdown(
         """
-When you choose **Full Intelligent Run**, the tool works through a sensible
-hierarchy, strongest evidence first:
+- **Excel (keeps your formatting)** re-opens your original workbook and writes
+  only the `New Account` column back. Formulas, column widths and other sheets
+  stay intact. A **Code Down Summary** tab records the run mode, the counts by
+  engine and the timestamp.
+- **CSV (ready to import)** is tidy: internal helper columns stripped, codes
+  normalized, plus a base-account column.
 
-1. **Your rules** (exact shortcuts you defined).
-2. **Learned memory** (codes you've approved before for look‑alike transactions).
-3. **Similarity** (groups transactions that read alike and applies your seeds).
-4. **Trained model** (an optional AI layer that improves as it learns).
-
-Every result comes with a **confidence score** and a short reason, so you can see
-*why* a code was chosen. Low-confidence rows are politely set aside for review
-rather than guessed.
+Filenames carry the client and date, so exports self-identify in your
+downloads folder.
         """)
-    st.caption("📸 Screenshot placeholder: the spreadsheet with filled codes, "
-               "confidence chips, and the toolbar.")
 
 
-def _review_and_learning() -> None:
-    st.subheader("Review Queue & how the tool gets smarter 📈")
+def _rules_that_matter() -> None:
+    st.subheader("The rules that protect your work")
     st.markdown(
         """
-**The Review Queue** gathers the rows the tool wasn't fully sure about so you can
-make the call quickly:
-
-- Confirm a suggested code with a click, or
-- Correct it — type the right code, and the tool remembers.
-
-**Every approval teaches the tool.** Approved codes become **learned memory** and
-**training examples**, so the next file is faster and more accurate.
-
-#### Models & learning progress
-- The app quietly trains a model in the background as approvals accumulate.
-- You can watch progress on the **Models** screen (examples learned, accuracy,
-  which engine is active).
-- If the model ever underperforms, it **automatically falls back** to the proven
-  built-in matcher — you never get worse results by enabling it.
-
-#### Rule Notes — capture the "why"
-Add a short **Rule Note** on a tricky transaction (e.g. *"quarterly maintenance
-contract"*). These hints improve matching **and** are remembered next time a
-similar file comes through.
+- A code that came in the file, or one you typed, is **never overwritten** —
+  not by rules, not by similarity, not by the AI, not by bulk actions, not by
+  reset.
+- Rule suggestions are mined from **Name, then Memo, then Description** —
+  never from Notes or Rule Notes.
+- A rule that would fill **zero blank rows** can't be saved without you
+  confirming it — the live preview shows blank matches and already-coded
+  matches separately before you commit.
+- Everything the automation does is auditable per row: code, engine,
+  confidence, and why.
         """)
-    st.caption("📸 Screenshot placeholder: the Review Queue and the Models "
-               "progress screen.")
-
-
-def _exports() -> None:
-    st.subheader("Exports — hand off clean, finished work 📤")
-    st.markdown(
-        """
-When you're happy with the classification, click **Export**:
-
-- **Excel (`.xlsx`)** — keeps the original formatting and adds a tidy
-  **summary tab** (totals coded, auto-filled, reviewed). Great for records and
-  for client-facing review.
-- **CSV** — a clean, ready-to-import file for your accounting or ERP system.
-
-Internal helper columns are stripped automatically, so what you download is
-polished and ready to use.
-        """)
-    st.info("Tip: the Excel summary tab is a quick, professional way to show "
-            "exactly what was done.")
-
-
-def _tips_and_troubleshooting() -> None:
-    st.subheader("Tips for best results 💡")
-    st.markdown(
-        """
-- **Seed a few codes first.** Code a handful of clear transactions before running
-  full automation — it gives the tool strong examples to learn from.
-- **Build rules for recurring vendors.** One good rule (e.g. `SaaS Tools → 6100`)
-  pays off on every future file.
-- **Use the search and filters.** Jump straight to "needs review" rows, or search
-  a vendor across the whole file.
-- **Approve generously but carefully.** Approvals are how the tool learns — the
-  more consistent you are, the smarter it gets.
-- **Add Rule Notes** on ambiguous transactions to capture context.
-        """)
-
-    st.subheader("Troubleshooting common questions 🧩")
-    with st.expander("A rule \"applied to 0 rows\" — why?"):
-        st.markdown(
-            "The keyword may be too specific, or it's looking only in selected "
-            "columns. Try a shorter, common part of the vendor name and leave the "
-            "column restriction off so it searches the whole row.")
-    with st.expander("Some rows were left blank after a run"):
-        st.markdown(
-            "The tool leaves a row blank rather than guess when it isn't "
-            "confident. Code one example, then re-run — similarity will carry it "
-            "to the look‑alikes. Or add a rule for that vendor.")
-    with st.expander("My codes look slightly different (e.g. a letter suffix)"):
-        st.markdown(
-            "Codes are automatically normalized to a consistent form (e.g. "
-            "`6100` or `6100A`), so they stay consistent across files.")
-    with st.expander("Will it overwrite work I've already done?"):
-        st.markdown(
-            "No. Values you typed or approved are protected. Rules and automation "
-            "only fill blanks or refine the tool's own earlier guesses.")
-    with st.expander("Did my data leave my computer / the demo?"):
-        st.markdown(
-            "Processing happens within the app. In the public demo, data is not "
-            "permanently saved across sessions unless persistent storage is "
-            "enabled (you'll see a banner noting this).")
-
-
-def _business_value() -> None:
-    st.subheader("Why this matters for your business 🚀")
-    st.markdown(
-        """
-This tool isn't just a time-saver — it's a **data flywheel** for your
-operation.
-
-- **Consistency compounds.** Each file you run trains better models, so
-  classification gets faster and more accurate across everything you process.
-- **More data, better insight.** The more transactions flow through the tool, the
-  richer the picture you can build — spend patterns, vendor trends, and category
-  breakdowns that help you understand and improve the business.
-- **A premium, repeatable process.** Clean, auditable, consistently coded data
-  delivered quickly positions you as the proactive, insight-driven operator.
-- **Lower cost to serve.** Hours saved per file means you can handle more volume
-  without adding headcount.
-
-> The strategic takeaway: every file you run makes the next one cheaper to
-> produce **and** more valuable. Volume and consistency turn routine data clean-up
-> into compounding intelligence.
-        """)
-    st.success(
-        "The more data the tool sees, the better the automation **and** the "
-        "insights you can act on.")

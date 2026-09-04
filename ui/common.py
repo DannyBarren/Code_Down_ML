@@ -412,10 +412,16 @@ def render_optional_setup() -> None:
 # --------------------------------------------------------------------------- #
 # Export summary table
 # --------------------------------------------------------------------------- #
-def export_summary_df(counts: dict, loaded, backend: str, mode: str) -> pd.DataFrame:
+def export_summary_df(counts: dict, loaded, backend: str, mode: str,
+                      work=None, audit: Optional[dict] = None) -> pd.DataFrame:
+    """The 'Code Down Summary' sheet: run mode, counts by engine, timestamp."""
+    from datetime import datetime, timezone
+
     rows = [
         ("File", loaded.source_name),
         ("Client", st.session_state.get("client_name") or "—"),
+        ("Exported at", datetime.now(timezone.utc).strftime(
+            "%Y-%m-%d %H:%M UTC")),
         ("Total transactions", counts["total"]),
         ("Already coded (examples)", counts["seeds"]),
         ("Filled automatically", counts["auto_filled"]),
@@ -427,6 +433,16 @@ def export_summary_df(counts: dict, loaded, backend: str, mode: str) -> pd.DataF
         ("Matching engine", backend or "—"),
         ("Decision mode", mode or "—"),
     ]
+    # Counts by engine (rules / memory / similarity / AI / manual …).
+    if work is not None:
+        try:
+            for b in sh.engine_breakdown(work):
+                rows.append((f"Coded by — {b['engine']}", b["rows"]))
+        except Exception:  # noqa: BLE001 - summary is best-effort
+            pass
+    if audit:
+        fired = int(audit.get("keyword_filled", 0) or 0)
+        rows.append(("Rules fired (last rule run)", fired))
     return pd.DataFrame(rows, columns=["Metric", "Value"]).astype(str)
 
 

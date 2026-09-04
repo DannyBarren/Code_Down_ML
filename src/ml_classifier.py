@@ -351,9 +351,12 @@ class ModelManager:
         reg = self._load_registry()
         return int(reg.get("models", {}).get(name, {}).get("version", 0)) + 1
 
-    def train_all(self, progress_cb=None) -> Dict[str, Dict]:
-        """Train every available model on the current labelled data.
+    def train_all(self, progress_cb=None,
+                  model_types: Optional[List[str]] = None) -> Dict[str, Dict]:
+        """Train the available models on the current labelled data.
 
+        ``model_types`` narrows which models train (e.g. ``["logreg"]`` for a
+        quick inline retrain); the default trains every available model.
         Returns a dict ``{model_name: metrics_or_error}``. Never raises for an
         individual model — failures are reported per-model.
         """
@@ -361,6 +364,7 @@ class ModelManager:
             if progress_cb:
                 progress_cb(msg)
 
+        wanted = set(model_types) if model_types else set(self.MODEL_TYPES)
         texts, labels = self.storage.get_training_xy()
         ml = self.config.ml
         results: Dict[str, Dict] = {}
@@ -368,27 +372,31 @@ class ModelManager:
         reg.setdefault("models", {})
 
         # --- LogReg (always available) ---------------------------------
-        report("Training Logistic Regression baseline…")
-        try:
-            model = LogRegModel()
-            metrics = model.train(texts, labels, ml.test_size,
-                                  ml.min_examples_to_train)
-            version = self._next_version("logreg")
-            rel = f"logreg/v{version}.joblib"
-            model.save(self.dir / rel)
-            reg["models"]["logreg"] = {
-                "version": version, "path": rel, "trained_at": _now(), **metrics}
-            results["logreg"] = metrics
-            self._cache.pop("logreg", None)
-            logger.info("logreg_trained", version=version, **metrics)
-        except InsufficientTrainingData as exc:
-            results["logreg"] = {"error": str(exc)}
-        except Exception as exc:  # noqa: BLE001
-            logger.error("logreg_train_failed", error=str(exc))
-            results["logreg"] = {"error": str(exc)}
+        if "logreg" in wanted:
+            report("Training Logistic Regression baseline…")
+            try:
+                model = LogRegModel()
+                metrics = model.train(texts, labels, ml.test_size,
+                                      ml.min_examples_to_train)
+                version = self._next_version("logreg")
+                rel = f"logreg/v{version}.joblib"
+                model.save(self.dir / rel)
+                reg["models"]["logreg"] = {
+                    "version": version, "path": rel, "trained_at": _now(),
+                    **metrics}
+                results["logreg"] = metrics
+                self._cache.pop("logreg", None)
+                logger.info("logreg_trained", version=version, **metrics)
+            except InsufficientTrainingData as exc:
+                results["logreg"] = {"error": str(exc)}
+            except Exception as exc:  # noqa: BLE001
+                logger.error("logreg_train_failed", error=str(exc))
+                results["logreg"] = {"error": str(exc)}
 
         # --- SetFit (optional) -----------------------------------------
-        if SetFitModel.is_available():
+        if "setfit" not in wanted:
+            pass
+        elif SetFitModel.is_available():
             report("Training SetFit model (this can take a while)…")
             try:
                 model = SetFitModel()
@@ -500,6 +508,22 @@ class ModelManager:
         if n >= self.config.ml.hybrid_min:
             return "hybrid"
         return "assist"
+
+    # ------------------------------------------------- auto-train reminder
+    def last_trained_at(self) -> Optional[str]:
+        """ISO timestamp of the most recent successful train, if any."""
+        reg = self._load_registry()
+        stamps = [m.get("trained_at") for m in reg.get("models", {}).values()
+                  if m.get("trained_at")]
+        return max(stamps) if stamps else None
+
+    def new_examples_since_train(self) -> int:
+        """Approvals captured since the last successful train.
+
+        Drives the quiet "train now — N new examples" banner. When no model
+        has ever trained, this is simply the total example count.
+        """
+        return self.storage.count_training_since(self.last_trained_at() or "")
 
 
 def _now() -> str:
