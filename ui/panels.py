@@ -463,8 +463,130 @@ def _render_account_knowledge(rules_manager) -> None:
 # --------------------------------------------------------------------------- #
 # Models
 # --------------------------------------------------------------------------- #
+def render_auto_train_banner() -> None:
+    """Public wrapper so the spreadsheet view can show the train reminder."""
+    config, storage, _rules, model_manager, logger = services()
+    _render_auto_train_banner(config, storage, model_manager, logger)
+
+
+def _render_auto_train_banner(config, storage, model_manager, logger) -> None:
+    """Quiet 'train now — N new examples' reminder (never silent training).
+
+    Appears once approvals since the last successful train reach
+    ``ml.auto_train_every``. The button trains the fast LogReg baseline inline
+    (small data, sub-second); the heavier SetFit model stays an explicit
+    choice on the train button below.
+    """
+    every = int(getattr(config.ml, "auto_train_every", 0) or 0)
+    if every <= 0:
+        return
+    new_examples = model_manager.new_examples_since_train()
+    can_train, _ = model_manager.can_train()
+    if new_examples < every or not can_train:
+        return
+    with st.container(border=True):
+        c1, c2 = st.columns([3.4, 1.4])
+        c1.markdown(f"**{new_examples:,} new approvals** since the last "
+                    "training run.")
+        c1.caption("Train now to put them to work — takes a second with the "
+                   "built-in LogReg model.")
+        if c2.button("Train now", type="primary", width="stretch",
+                     key="auto_train_now"):
+            try:
+                with st.spinner("Training on your latest approvals…"):
+                    results = model_manager.train_all(model_types=["logreg"])
+                res = results.get("logreg", {})
+                if "error" in res:
+                    st.warning(f"Training skipped: {res['error']}")
+                else:
+                    acc = res.get("accuracy")
+                    common.set_flash(
+                        f"Trained LogReg on {res.get('n_examples', 0):,} "
+                        f"examples across {res.get('n_labels', 0)} codes"
+                        + (f" — held-out accuracy {acc:.0%}."
+                           if acc is not None else ".")
+                        + f" Active model: "
+                          f"{model_manager.active_model_name() or 'none'}.")
+                    st.rerun()
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"Training did not complete: {exc}")
+                logger.error("auto_train_failed", error=str(exc))
+
+
+def _render_memory_inspector(storage, model_manager, client_id) -> None:
+    """Memory inspector: what the tool remembers for this client.
+
+    Counts, last train time, active model + held-out accuracy, and the top
+    learned mappings — with the ability to delete a bad mapping so it stops
+    firing on the next run.
+    """
+    st.divider()
+    st.subheader("Memory inspector")
+    scope = client_id or "shared"
+    mappings = storage.list_learned_mappings(client_id=client_id)
+    n_examples = storage.count_training_data(client_id=client_id)
+    labels = storage.distinct_labels(client_id=client_id)
+    n_blocked = storage.count_blocked_mappings()
+
+    statuses = {s.name: s for s in model_manager.status_list()}
+    active = model_manager.active_model_name()
+    active_status = statuses.get(active) if active else None
+
+    m = st.columns(4)
+    m[0].metric("Remembered codes", f"{len(mappings):,}",
+                help=f"Exact-match mappings in scope: {scope}.")
+    m[1].metric("Training examples", f"{n_examples:,}",
+                help=f"{len(labels):,} distinct account codes.")
+    m[2].metric("Last trained",
+                (model_manager.last_trained_at() or "never")[:19].replace(
+                    "T", " "))
+    m[3].metric("Active model accuracy",
+                f"{active_status.accuracy:.0%}"
+                if active_status and active_status.accuracy is not None
+                else "—",
+                help=f"Held-out accuracy of the active model "
+                     f"({active or 'none yet'}).")
+    if n_blocked:
+        st.caption(f"{n_blocked} rejected pairing(s) are blocked from "
+                   "re-suggesting.")
+
+    if not mappings:
+        st.info("Nothing remembered yet for this client. Approve codes in "
+                "the spreadsheet or Review workspace.")
+        return
+
+    st.caption(f"Top {min(20, len(mappings))} remembered mappings "
+               "(most-used first). Tick **del** and confirm to forget one — "
+               "it stops firing on the next run.")
+    top = mappings[:20]
+    mdf = pd.DataFrame([{
+        "del": False,
+        "id": m.id,
+        "account_code": m.account_code,
+        "times seen": m.hits,
+        "scope": m.client_id or "shared",
+        "transaction text": m.signature[:80],
+    } for m in top])
+    edited = st.data_editor(
+        mdf, width="stretch", hide_index=True, key="memory_inspector_editor",
+        disabled=[c for c in mdf.columns if c != "del"],
+        column_config={
+            "del": st.column_config.CheckboxColumn("del", width="small"),
+            "id": st.column_config.NumberColumn(width="small"),
+        })
+    to_delete = [int(r["id"]) for _, r in edited.iterrows() if bool(r["del"])]
+    if st.button(f"Delete selected mapping(s) ({len(to_delete)})",
+                 key="memory_delete", disabled=not to_delete):
+        removed = sum(1 for mid in to_delete
+                      if storage.delete_learned_mapping(mid))
+        common.set_flash(f"Deleted {removed} mapping(s) — they will not fire "
+                         "on the next run.")
+        st.rerun()
+
+
 def page_models() -> None:
     config, storage, rules, model_manager, logger = services()
+    client_id = common.current_client_id()
 
     st.write(
         "As codes are approved, the application trains a model in the background "
@@ -491,6 +613,11 @@ def page_models() -> None:
         target, label = primary_min, "model leading"
     pct = min(n_examples / target, 1.0) if target else 1.0
     st.progress(pct, text=f"{n_examples:,} / {target:,} examples — next: {label}")
+    st.caption(
+        f"Similarity leads while you're building up approvals. The model "
+        f"starts voting alongside similarity at ~{hybrid_min:,} approvals and "
+        f"starts leading after ~{primary_min:,} — that's why similarity is "
+        "still in charge early on.")
 
     can_train, reason = model_manager.can_train()
     if not model_manager.has_model() and can_train:
@@ -500,6 +627,9 @@ def page_models() -> None:
     else:
         st.success("Keep the mode on **Auto** — the model is used more as it "
                    "accumulates examples.")
+
+    _render_auto_train_banner(config, storage, model_manager, logger)
+    _render_memory_inspector(storage, model_manager, client_id)
 
     st.markdown("#### Decision mode")
     keys = list(ML_MODE_LABELS.keys())
