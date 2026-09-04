@@ -17,10 +17,15 @@ Layers, in the priority order the engine applies them per row:
 1. **Seed** — a value already present in the upload (or typed by the user) is
    kept as-is. Seeds are protected and never overwritten.
 2. **Keyword rules** — deterministic phrase → code rules, persisted in SQLite.
+   When a rule disagrees with learned memory, the rule wins and the rationale
+   says so.
 3. **Learned memory** — an exact text-signature lookup built from past
-   approvals.
+   approvals. Pairings the user rejected (`blocked_mappings`) never fire.
 4. **Similarity** — embeddings + cosine distance to the nearest seed rows;
-   DBSCAN clusters look-alike transactions into groups.
+   DBSCAN clusters look-alike transactions into groups. When the nearest seeds
+   disagree on the account, the row is sent to review with the vote split
+   instead of being auto-filled; a weak majority caps the fill at
+   filled-for-review.
 5. **Trainable ML (optional)** — LogReg (always available) or SetFit
    (optional), layered on top of the similarity decision.
 
@@ -60,12 +65,18 @@ left blank and sent to the review queue.
   punctuation/case/spacing tolerant, supports comma-separated phrases (OR),
   `contains`/`exact`/`starts_with`/`ends_with`/`fuzzy`/`regex` match types,
   row-wide search by default, and optional column scoping with tolerant header
-  resolution. `apply_rules_to_dataframe()` is the deterministic blank-only fill
-  path with a full per-row audit (`protected_existing` / `keyword_rule` /
-  `no_rule_match`). Also hosts the **account knowledge base**: per-account
-  profiles (keywords, sample texts, usage counts) reinforced on every rule save
-  and rule run, plus `enrich_results()` which appends that learned context to
-  rationales.
+  resolution. Fuzzy matching is token-aware: it tolerates vendor misspellings
+  but never matches a token inside a longer word (an address containing
+  "shawnee" does not fire a "Shaw Media" rule). `apply_rules_to_dataframe()`
+  is the deterministic blank-only fill path with a full per-row audit
+  (`protected_existing` / `keyword_rule` / `no_rule_match`), and
+  `near_miss_suggestions()` surfaces rows that almost matched a rule after a
+  strict run (suggested rule edits — never auto-filled). Also hosts the
+  **account knowledge base**: per-account profiles (keywords, sample texts,
+  usage counts) reinforced on every rule save, rule run and human approval,
+  plus `enrich_results()` which appends that learned context to rationales.
+  `record_human_approval()` is the single learning path every approval flows
+  through (learned mapping + training example + profile reinforcement).
 - **`fill_down_engine.py`** — the orchestration core. `FillDownEngine.run()`
   embeds and clusters all rows, then decides each row in priority order:
   seed → rule → learned mapping → similarity, with the ML prediction layered
@@ -85,14 +96,20 @@ left blank and sent to the review queue.
   examples (`hybrid_min` / `ml_primary_min`). Prediction never raises — no
   model means "no prediction", and the engine falls back to similarity.
 - **`review_queue.py`** — builds the editable review table from flagged results
-  (`FILLED_REVIEW`, `NEEDS_REVIEW`) and applies the user's approvals back onto
-  the working dataframe.
+  (`FILLED_REVIEW`, `NEEDS_REVIEW`), sorted least-confident first, and applies
+  the user's approvals back onto the working dataframe through the single
+  learning path.
 - **`spreadsheet_helpers.py`** — the pure, testable logic behind the
   spreadsheet UI. Owns the `work_df` conventions (internal columns are
   `_`-prefixed: `_confidence`, `_engine`, `_action`, `_why`, `_suggested`,
-  `_select`), the three run modes (`run_full`, `run_selected_rules_audited`,
-  `run_rules_hybrid`), reset/un-run, bulk approve, manual-edit commits, rule
-  candidate mining, live rule preview, filters/search/pagination, and
+  `_select`, `_group`), the run modes (`run_full`, `run_selected_rules_audited`,
+  `run_rules_plus_memory`, `run_rules_hybrid`, `run_learned_memory`),
+  reset/un-run, bulk approve, manual-edit commits, rule candidate mining
+  (keyword-source ordered: Name → Memo → Description → Payee → …, note-like
+  columns excluded), live rule preview with blank-vs-protected counts, the
+  review-workspace helpers (`review_rows_df`, `apply_review_table`,
+  `group_review_summary`, `approve_similarity_group`, `reject_rows`,
+  `apply_suggested_to_rows`, `recode_rows`), filters/search/pagination, and
   undo/redo snapshots.
 - **`dependencies.py`** — stdlib-only dependency probes and the streamed
   in-app pip installer (installs only missing packages, pins
@@ -107,10 +124,17 @@ left blank and sent to the review queue.
 
 - **`landing.py`** — dashboard: optional client/project name, file upload,
   sample-data loader, recent runs, demo controls.
-- **`spreadsheet.py`** — the main workspace: sticky toolbar (run modes,
-  approve, undo/redo, export), filter bar (quick views, global search,
-  engine and confidence filters), paginated `st.data_editor` with auto-save,
-  post-run metrics and rule-run audit panels, and the export dialog.
+- **`spreadsheet.py`** — the main workspace: sticky toolbar (run modes ordered
+  strict-first, approve, undo/redo, export), filter bar (quick views, global
+  search, engine and confidence filters), paginated `st.data_editor` with
+  auto-save, post-run metrics and rule-run audit panels (including near-miss
+  suggestions), and the export dialog.
+- **`review.py`** — the Review workspace: only rows needing a human, sorted
+  least-confident first; similarity-group cards with one-click group approve
+  (split groups are never one-click approved); bulk approve visible /
+  above-confidence; apply-suggested / recode / reject for selected rows; a
+  batched editable table (one Apply click per review session, not per row);
+  promote-to-rule on any row.
 - **`panels.py`** — Rules, Models, and History management modals, including
   human-reviewed rule creation from pre-filled rows, suggested rules mined from
   coded rows, the account-knowledge view, and model training.
@@ -129,8 +153,13 @@ left blank and sent to the review queue.
 ### `utils/`, `models/`, `data/`
 
 - **`utils/storage.py`** — the SQLite layer (stdlib `sqlite3`, thread-safe).
-  Tables: `rules`, `learned_mappings`, `rule_notes`, `training_data`,
-  `run_history`, `account_profiles`. `reset_all()` backs demo-mode resets.
+  Tables: `rules`, `learned_mappings`, `blocked_mappings`, `rule_notes`,
+  `training_data`, `run_history`, `account_profiles`. `learned_mappings` and
+  `training_data` carry a `client_id` (`''` = shared/default client) for
+  per-client isolation; databases created before that column existed are
+  migrated in place without losing rows. `blocked_mappings` records rejected
+  signature → code pairings so they are never re-suggested. `reset_all()`
+  backs demo-mode resets.
 - **`utils/account_codes.py`** — account-code parsing and normalization
   (`6100 a` / `6100-A` / `6100.0` → `6100A`), base-account and sub-account
   helpers.
@@ -154,12 +183,14 @@ left blank and sent to the review queue.
    `New Account`, normalizes existing codes, and builds `_sim_text`.
    `spreadsheet_helpers.build_work_df()` adds `Rule Notes` and the `_`-prefixed
    meta columns, and re-attaches any previously saved notes via `_base_sig`.
-2. **Run.** The toolbar offers three modes:
-   - *Full Intelligent Run* → `FillDownEngine.run()` (the full cascade).
-   - *Run Rules (strict)* → `run_selected_rules_audited()` — blank rows only,
-     only the selected rules' codes, full audit. No similarity, no ML.
+2. **Run.** The toolbar offers four modes (recommended first):
+   - *Run Rules — Strict ★* → `run_selected_rules_audited()` — blank rows only,
+     only the enabled rules' codes, full audit. No similarity, no ML.
+   - *Rules + Memory* → `run_rules_plus_memory()` — strict rules, then learned
+     exact-match memory. Deterministic, blank-only, audited.
    - *Run Rules + Similarity* → `run_rules_hybrid()` — strict rules first, then
      the rule-filled and pre-coded rows become seeds for a similarity pass.
+   - *Full Intelligent Run* → `FillDownEngine.run()` (the full cascade).
 3. **Decide.** Inside the engine, each blank row stops at the first confident
    layer: rule match (0.99) → learned exact match (0.97) → similarity score
    (best cosine × seed agreement), optionally overridden or confirmed by the ML

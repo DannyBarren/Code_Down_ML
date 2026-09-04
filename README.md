@@ -117,32 +117,46 @@ instead of crashing.
 
 ## Run modes
 
-Three modes in the spreadsheet toolbar:
+Four modes in the spreadsheet toolbar, ordered by trust (recommended first):
 
 | Mode | What it uses | When |
 | --- | --- | --- |
-| **Full Intelligent Run** | Rules + learned memory + ML + similarity, whole file | Broadest coverage in one click. |
-| **Run Rules (strict)** | Only your enabled keyword rules, blank rows only | Deterministic and auditable. Fills nothing a rule didn't match. |
+| **Run Rules — Strict ★ (recommended)** | Only your enabled keyword rules, blank rows only | Deterministic and auditable. Fills nothing a rule didn't match. |
+| **Rules + Memory** | Strict rules, then exact matches you approved before | Deterministic coverage from past approvals. |
 | **Run Rules + Similarity** | Rules first, then similarity spread from rule-filled + coded rows | Propagate rule codes to look-alike transactions. |
+| **Full Intelligent Run** | Rules + learned memory + ML + similarity, whole file | Broadest coverage in one click. Can fill rows no rule matched — review those. |
 
 Strict mode never leaks across accounts. Existing values are never overwritten
-in any mode. **Reset run** un-runs the last pass and keeps your rules, notes,
-and manual edits.
+in any mode. When the nearest seed rows disagree on a code, the row goes to
+review with the vote split instead of being silently filled. **Reset run**
+un-runs the last pass and keeps your rules, notes, and manual edits.
 
 ---
 
 ## Review and learning
 
-- The **Review Queue** holds flagged rows. Approving a row writes the code,
-  protects it, and records two things: a learned mapping (instant exact-match
-  memory) and a training example (feeds the ML models).
+- The **Review workspace** (sidebar) shows only rows that need a human, least
+  confident first, with the code, engine, confidence and a plain-English *why*
+  on every row. Similarity groups approve in one click (split groups never
+  do). Bulk actions approve everything visible or above a confidence cutoff;
+  selected rows can be re-coded or rejected in bulk. Rejecting blocks the bad
+  pairing from being suggested again — and never learns it.
+- Approving a row writes the code, protects it, and records three things: a
+  learned mapping (instant exact-match memory), a training example (feeds the
+  ML models) and a reinforcement of the account's knowledge profile.
 - **Rule Notes** is a per-row free-text column. Notes fold into the similarity
-  text and persist across uploads via a stable row signature.
+  text and persist across uploads via a stable row signature. They are never
+  mined for rule keywords — suggestions come from Name, then Memo, then
+  Description.
 - The **Account Knowledge** base learns what each account code looks like —
   keywords, sample transactions, usage count — and adds that context to match
   rationales.
-- **Models** panel: engine status, examples learned, train/retrain. **History**
-  panel: past runs.
+- **Models** panel: engine status, a memory inspector (mappings, examples,
+  last train, held-out accuracy, delete-a-bad-mapping), and a quiet "train
+  now" reminder after every 25 new approvals. **History** panel: past runs.
+- Rules, learned mappings, training data and account profiles are scoped per
+  client (the dashboard's client/project name), so switching clients never
+  leaks one book's memory into another's.
 
 ---
 
@@ -166,9 +180,15 @@ adjustable from the sidebar's **Advanced tuning** section.
 - `confidence` — auto-fill cutoff (0.85), review cutoff (0.55), rule/learned
   match confidences.
 - `ml` — enable/disable, mode, confidence cutoff, SetFit settings, progressive
-  thresholds, model store directory.
+  thresholds, model store directory, `auto_train_every` (approvals between
+  train reminders, default 25).
 - `columns` — header variants recognized as the target `New Account` column, the
-  text columns used for similarity, amount and date columns.
+  text columns used for similarity (vendor-first: Name, Memo, Description…),
+  amount and date columns, plus `keyword_source` / `keyword_source_exclude`
+  controlling which columns rule suggestions are mined from (notes are never
+  mined unless explicitly opted in).
+- `account_glossary` — optional NARPM-style code → name/keywords mapping that
+  enriches rationales. Empty by default; never required.
 - `storage` / `logging` — SQLite path, work dir, log file.
 
 Runtime data (SQLite DB, trained models, caches, logs) goes under a writable
@@ -226,6 +246,7 @@ code_down_ML/
 ├── ui/                         # Streamlit views
 │   ├── landing.py              #   dashboard: client name, upload, sample data
 │   ├── spreadsheet.py          #   main grid, toolbar, run modes, export
+│   ├── review.py               #   review workspace: groups, bulk approve/reject
 │   ├── panels.py               #   Rules / Models / History modals
 │   ├── rule_creation.py        #   rule builder dialog + suggestion banners
 │   ├── sidebar.py              #   nav, engine status, advanced tuning
