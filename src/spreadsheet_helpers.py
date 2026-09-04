@@ -245,7 +245,8 @@ _PROTECTED_ENGINES = {"seed", "manual"}
 def run_rules_only(work_df: pd.DataFrame, rules_manager: RulesManager,
                    loaded: LoadedData, config: Config,
                    indices: Optional[List[int]] = None,
-                   overwrite: bool = False) -> int:
+                   overwrite: bool = False,
+                   client_id: Optional[str] = None) -> int:
     """Apply enabled keyword rules to the given rows.
 
     * ``overwrite=False`` (default): only fills **blank** rows.
@@ -258,7 +259,7 @@ def run_rules_only(work_df: pd.DataFrame, rules_manager: RulesManager,
     """
     recompute_sim_text(work_df, loaded.text_columns, config)
     na_col = loaded.new_account_col
-    active = rules_manager.list_rules(enabled_only=True)
+    active = rules_manager.list_rules(enabled_only=True, client_id=client_id)
     if not active:
         return 0
     if indices is None:
@@ -325,7 +326,7 @@ def run_selected_rules_audited(
     recompute_sim_text(work_df, loaded.text_columns, config)
     na_col = loaded.new_account_col
     active = RulesManager._sorted_for_apply(
-        rules_manager.list_rules(enabled_only=True))
+        rules_manager.list_rules(enabled_only=True, client_id=client_id))
     if indices is None:
         indices = list(work_df.index)
 
@@ -1064,7 +1065,8 @@ def candidate_rules(work_df: pd.DataFrame, loaded: LoadedData,
 
 def create_rules_from_candidates(rules_manager: RulesManager,
                                  candidates: List[Dict],
-                                 match_type: str = "contains") -> int:
+                                 match_type: str = "contains",
+                                 client_id: Optional[str] = None) -> int:
     """Persist the chosen candidate rules (skipping any already-covered keyword)."""
     existing = existing_rule_keywords(rules_manager)
     created = 0
@@ -1075,7 +1077,8 @@ def create_rules_from_candidates(rules_manager: RulesManager,
             continue
         rules_manager.add_rule(kw, code, match_type=match_type,
                                case_sensitive=False, fields=[],
-                               notes="Auto-suggested from your coded rows.")
+                               notes="Auto-suggested from your coded rows.",
+                               client_id=client_id)
         existing.add(kw.lower())
         created += 1
     return created

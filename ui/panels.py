@@ -189,7 +189,8 @@ def _render_suggested_rules(rules_manager) -> None:
         if st.button(f"Create {len(chosen)} selected rule(s)", type="primary",
                      width="stretch", key="create_suggested_rules",
                      disabled=not chosen):
-            n = sh.create_rules_from_candidates(rules_manager, chosen)
+            n = sh.create_rules_from_candidates(
+                rules_manager, chosen, client_id=common.current_client_id())
             common.set_flash(
                 f"Created {n} rule(s) from your coded rows. Run them from the "
                 "spreadsheet toolbar.")
@@ -288,7 +289,8 @@ def page_rules() -> None:
                 else:
                     rules_manager.add_rule(
                         keyword.strip(), code.strip(), match_type=match_type,
-                        case_sensitive=case_sensitive, fields=fields, notes=notes)
+                        case_sensitive=case_sensitive, fields=fields,
+                        notes=notes, client_id=common.current_client_id())
                     common.set_flash(
                         f"Added rule: '{keyword}' → {normalize_code(code)}.")
                     st.rerun()
