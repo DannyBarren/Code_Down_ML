@@ -1,0 +1,106 @@
+# =============================================================================
+# ProfitCoach – Fill Down Automation – Configuration
+# =============================================================================
+# All thresholds and behavioural knobs live here so they can be tuned without
+# touching code. Most values are also overridable live from the Streamlit UI.
+# -----------------------------------------------------------------------------
+
+app:
+  name: "ProfitCoach"
+  version: "1.0.0"
+
+# ---------------------------------------------------------------------------
+# Semantic similarity / embedding model (the reliable foundation engine)
+# ---------------------------------------------------------------------------
+similarity:
+  # sentence-transformers model used to embed transaction text.
+  model_name: "all-MiniLM-L6-v2"
+  # Cosine-similarity threshold (0-1). Two transactions are considered "similar"
+  # (i.e. members of the same group) when their similarity is at or above this.
+  similarity_threshold: 0.72
+  # DBSCAN clustering epsilon expressed as (1 - similarity). Auto-derived from
+  # similarity_threshold when null.
+  cluster_eps: null
+  # Minimum members required to form a cluster.
+  min_cluster_size: 2
+  # If true, use sentence-transformers; otherwise force the TF-IDF fallback.
+  use_embeddings: true
+  # Cache embeddings on disk to speed up repeated runs.
+  cache_embeddings: true
+  # Strip long numeric tokens (check numbers, dates, amounts) from the text
+  # used for matching – they are noise that hurts grouping accuracy.
+  drop_numeric_tokens: true
+  # Collapse identical field values (e.g. Name == Memo) so repeated text does
+  # not dominate the similarity signal.
+  dedupe_fields: true
+
+# ---------------------------------------------------------------------------
+# Confidence scoring
+# ---------------------------------------------------------------------------
+confidence:
+  # Fill-downs at or above this score are auto-applied.
+  auto_apply_cutoff: 0.85
+  # Fill-downs below auto_apply_cutoff but at or above this are still applied
+  # but flagged for review. Below this they go to the review queue unfilled.
+  review_cutoff: 0.55
+  # Confidence assigned to an exact keyword-rule match.
+  rule_match_confidence: 0.99
+  # Confidence assigned to an exact (already-seen) learned mapping.
+  learned_match_confidence: 0.97
+
+# ---------------------------------------------------------------------------
+# Trainable ML layer (optional, sits on top of similarity)
+# ---------------------------------------------------------------------------
+ml:
+  # Master switch. When false the app uses similarity only.
+  enabled: true
+  # auto | similarity_only | hybrid | prefer_ml
+  # "auto" chooses behaviour from how many labelled examples exist:
+  #   < hybrid_min        -> assist  (similarity primary, ML only when very confident)
+  #   hybrid_min..ml_primary_min -> hybrid (ML + similarity vote)
+  #   >= ml_primary_min   -> prefer_ml (ML primary, similarity fallback)
+  mode: "auto"
+  # An ML prediction must reach this confidence to be trusted as "high".
+  ml_confidence_cutoff: 0.85
+  # SetFit base model (small => fast CPU training). Optional dependency.
+  setfit_model_name: "sentence-transformers/paraphrase-MiniLM-L3-v2"
+  setfit_num_epochs: 1
+  setfit_batch_size: 16
+  # Progressive thresholds (labelled-example counts).
+  hybrid_min: 300
+  ml_primary_min: 1500
+  # Training guards.
+  min_examples_to_train: 10
+  test_size: 0.2
+  # Where versioned trained models are stored.
+  model_store_dir: "data/models"
+
+# ---------------------------------------------------------------------------
+# Column mapping
+# ---------------------------------------------------------------------------
+# Logical column name -> list of candidate header names found in source files.
+# The loader resolves the first matching header (case-insensitive).
+columns:
+  new_account: ["New Account", "NewAccount", "New COA", "New Category", "New_Account", "NARPM Account", "Target Account", "GL Account", "Account Code"]
+  text_columns: ["Description", "Name", "Memo", "Account", "Category", "Payee", "Split"]
+  amount: ["Amount", "Amount (USD)", "Debit", "Credit"]
+  date: ["Date", "Transaction Date", "Posting Date"]
+  # Columns combined (in order) to build the text used for embeddings.
+  similarity_columns: ["Description", "Name", "Memo", "Account", "Category"]
+
+# ---------------------------------------------------------------------------
+# Persistence
+# ---------------------------------------------------------------------------
+storage:
+  # SQLite database for rules, learned mappings, training data and history.
+  db_path: "data/fill_down.db"
+  # Directory for temporary uploads / exports / embedding cache.
+  work_dir: "data/work"
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging:
+  level: "INFO"
+  json: false
+  log_file: "data/fill_down.log"

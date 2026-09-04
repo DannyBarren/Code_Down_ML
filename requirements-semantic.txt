@@ -1,0 +1,19 @@
+# Optional dependencies for best-accuracy matching + the trainable ML layer.
+# Install with:  pip install -r requirements-semantic.txt
+# On first run the all-MiniLM-L6-v2 model (~80 MB) downloads automatically.
+#
+# The app works fully without these:
+#   * similarity falls back to TF-IDF
+#   * the ML layer falls back to the built-in Logistic Regression baseline
+#     (SetFit is skipped when not installed)
+
+sentence-transformers>=2.5.0
+torch>=2.5.0
+
+# Optional, more powerful trainable model (few-shot). Needs the torch stack above.
+setfit>=1.0.0
+
+# Pin the Hugging Face transformers major version: setfit (and older
+# sentence-transformers) rely on APIs that were removed in transformers 5.x,
+# so the 4.x line is the compatible, well-tested choice for this app.
+transformers>=4.41,<5

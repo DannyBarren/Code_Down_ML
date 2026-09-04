@@ -1,0 +1,42 @@
+# Secrets / local environment
+.env
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+*.egg-info
+.pytest_cache
+
+# Runtime data (regenerated on first run; not for version control)
+*.db
+*.sqlite
+*.db-journal
+data/*.log
+data/work/
+data/uploads/
+
+# Model artifacts — retrained from approvals, never committed
+*.pkl
+*.bin
+models/*.bin
+*.pt
+*.safetensors
+*.joblib
+checkpoints/
+data/models/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.~lock.*#
+
+# Real client data — never commit (keep local only)
+DEVELOPMENT ONLY*.csv
+*Transaction Detail*.csv
