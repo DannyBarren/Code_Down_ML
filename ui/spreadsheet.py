@@ -338,7 +338,7 @@ def _render_rule_audit_details(audit: dict, is_pure: bool) -> None:
                == "rules+memory" else "")
             + " ran, filling blank rows only. No similarity, no other "
             "accounts. Use **Full Intelligent Run** for broader matching.")
-        m = st.columns(5)
+        m = st.columns(6)
         m[0].metric("Filled by rules", f"{kw_n:,}")
         m[1].metric("Filled by memory", f"{mem_n:,}",
                     help="Exact matches to codes you approved before.")
@@ -346,9 +346,14 @@ def _render_rule_audit_details(audit: dict, is_pure: bool) -> None:
                     f"{int(audit.get('protected_existing', 0)):,}",
                     delta=(f"{pbm} matched a rule" if pbm else None),
                     delta_color="off")
-        m[3].metric("Still blank", f"{int(audit.get('left_blank', 0)):,}")
+        left_blank = int(audit.get("left_blank", 0))
+        m[3].metric("Still blank", f"{left_blank:,}")
         m[4].metric("Distinct codes used",
                     f"{len({r.proposed_value for r in kw_results}):,}")
+        blanks = kw_n + mem_n + left_blank
+        m[5].metric("Success rate on blanks",
+                    f"{(kw_n + mem_n) / blanks:.0%}" if blanks else "—",
+                    help="Share of blank rows this run filled.")
     else:
         st.caption(
             "Rules match exact phrases, then spread those codes to similar "

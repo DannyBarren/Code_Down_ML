@@ -424,6 +424,50 @@ def test_existing_db_migrates_to_client_schema(tmp_path):
     storage.close()
 
 
+def test_strict_run_is_scoped_to_the_active_client(
+        make_loaded, storage, rules, config):
+    """A strict run for client A must not fire client B's rules."""
+    rules.add_rule("acme", "6300S", client_id="client_a")
+    rules.add_rule("acme", "9999", client_id="client_b")
+    loaded = make_loaded([
+        {"Name": "Acme", "Description": "service", "New Account": ""},
+    ])
+    work = sh.build_work_df(loaded, storage, config)
+    n, _ = sh.run_selected_rules_audited(work, rules, loaded, config,
+                                         client_id="client_a")
+    assert n == 1
+    assert work.at[0, NEW_ACCOUNT_COL] == "6300S"   # client A's rule, not B's
+
+    # Client B's run uses their own rule.
+    work_b = sh.build_work_df(loaded, storage, config)
+    sh.run_selected_rules_audited(work_b, rules, loaded, config,
+                                  client_id="client_b")
+    assert work_b.at[0, NEW_ACCOUNT_COL] == "9999"
+
+
+def test_account_glossary_enriches_rationales(make_loaded, storage, rules,
+                                              config):
+    """The optional glossary adds the official account name to rationales."""
+    config.account_glossary = {
+        "6322": {"name": "Call Center Services",
+                 "keywords": ["call center"]},
+    }
+    loaded = make_loaded([
+        {"Name": "Cunningham", "Description": "call center",
+         "New Account": "6322"},
+        {"Name": "Cunningham", "Description": "call center",
+         "New Account": ""},
+    ])
+    res = _engine(config, rules, storage).run(loaded)
+    r = res.results[1]
+    assert r.proposed_value == "6322"
+    assert "Call Center Services" in r.rationale
+    # An empty/malformed glossary never breaks a run.
+    config.account_glossary = {"bad": "not-a-dict"}
+    res2 = _engine(config, rules, storage).run(loaded)
+    assert res2.df.iloc[1][loaded.new_account_col] == "6322"
+
+
 def test_learned_memory_only_mode_fills_exact_signatures(
         make_loaded, storage, rules, config):
     loaded = make_loaded([

@@ -428,7 +428,8 @@ def _save_rule_from_dialog(work, loaded, config, rules, storage,
     common.push_undo()
     rules.add_rule(
         keyword, code, match_type=match_type,
-        case_sensitive=case_sensitive, fields=fields, notes=notes)
+        case_sensitive=case_sensitive, fields=fields, notes=notes,
+        client_id=common.current_client_id())
 
     if stamp_notes and notes:
         from models.schemas import KeywordRule
@@ -443,7 +444,8 @@ def _save_rule_from_dialog(work, loaded, config, rules, storage,
         recompute_sim_text(work, loaded.text_columns, config)
         sh._persist_changed_notes(work, storage)
 
-    applied = sh.run_rules_only(work, rules, loaded, config, overwrite=False)
+    applied = sh.run_rules_only(work, rules, loaded, config, overwrite=False,
+                                client_id=common.current_client_id())
     close_rule_panel()
     st.session_state["data_version"] = st.session_state.get("data_version", 0) + 1
     common.set_flash(

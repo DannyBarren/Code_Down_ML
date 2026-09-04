@@ -151,7 +151,8 @@ class FillDownEngine:
                 effective_mode = "similarity_only"
 
         report(0.55, "Scoring and propagating account codes…")
-        active_rules = self.rules.list_rules(enabled_only=True)
+        active_rules = self.rules.list_rules(enabled_only=True,
+                                             client_id=self.client_id)
         results: List[FillResult] = []
 
         # Precompute similarity of every row to every seed row (if any seeds).
