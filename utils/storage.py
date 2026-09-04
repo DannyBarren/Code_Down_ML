@@ -56,10 +56,24 @@ class Storage:
 
                 CREATE TABLE IF NOT EXISTS learned_mappings (
                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                    signature    TEXT NOT NULL UNIQUE,
+                    signature    TEXT NOT NULL,
                     account_code TEXT NOT NULL,
                     hits         INTEGER NOT NULL DEFAULT 1,
-                    last_seen    TEXT NOT NULL
+                    last_seen    TEXT NOT NULL,
+                    -- '' = shared/default client; a value scopes the mapping.
+                    client_id    TEXT NOT NULL DEFAULT '',
+                    UNIQUE(signature, client_id)
+                );
+
+                -- Pairings a reviewer explicitly rejected (signature ↛ code).
+                -- The engine never auto-fills a blocked pair again.
+                CREATE TABLE IF NOT EXISTS blocked_mappings (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    signature    TEXT NOT NULL,
+                    account_code TEXT NOT NULL,
+                    client_id    TEXT NOT NULL DEFAULT '',
+                    created_at   TEXT NOT NULL,
+                    UNIQUE(signature, account_code, client_id)
                 );
 
                 -- Per-transaction "Rule Notes" keyed by a *base* text signature
@@ -80,7 +94,9 @@ class Storage:
                     engine_used  TEXT NOT NULL DEFAULT 'manual',
                     timestamp    TEXT NOT NULL,
                     approved_by  TEXT NOT NULL DEFAULT 'user',
-                    UNIQUE(text, label)
+                    -- '' = shared/default client; a value scopes the example.
+                    client_id    TEXT NOT NULL DEFAULT '',
+                    UNIQUE(text, label, client_id)
                 );
 
                 CREATE TABLE IF NOT EXISTS run_history (
@@ -124,6 +140,7 @@ class Storage:
                 """
             )
         self._ensure_rule_columns()
+        self._ensure_client_isolation()
 
     def _ensure_rule_columns(self) -> None:
         """Add newer ``rules`` columns to a database created before they existed.
@@ -141,6 +158,64 @@ class Storage:
             if "client_id" not in cols:
                 self._conn.execute("ALTER TABLE rules ADD COLUMN client_id TEXT")
 
+    def _table_columns(self, table: str) -> set:
+        return {r["name"] for r in
+                self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+    def _ensure_client_isolation(self) -> None:
+        """Add ``client_id`` to learned_mappings / training_data on old DBs.
+
+        SQLite cannot alter a UNIQUE constraint in place, so when a pre-existing
+        table lacks ``client_id`` we rebuild it under the new schema and copy
+        every row across, assigning the shared/default client (``''``). No data
+        is dropped — existing memory simply becomes the default client's memory.
+        """
+        with self._lock, self._conn:
+            if "client_id" not in self._table_columns("learned_mappings"):
+                self._conn.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS learned_mappings_new (
+                        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                        signature    TEXT NOT NULL,
+                        account_code TEXT NOT NULL,
+                        hits         INTEGER NOT NULL DEFAULT 1,
+                        last_seen    TEXT NOT NULL,
+                        client_id    TEXT NOT NULL DEFAULT '',
+                        UNIQUE(signature, client_id)
+                    );
+                    INSERT OR IGNORE INTO learned_mappings_new
+                        (id, signature, account_code, hits, last_seen, client_id)
+                        SELECT id, signature, account_code, hits, last_seen, ''
+                        FROM learned_mappings;
+                    DROP TABLE learned_mappings;
+                    ALTER TABLE learned_mappings_new RENAME TO learned_mappings;
+                    """
+                )
+            if "client_id" not in self._table_columns("training_data"):
+                self._conn.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS training_data_new (
+                        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                        text         TEXT NOT NULL,
+                        label        TEXT NOT NULL,
+                        confidence   REAL NOT NULL DEFAULT 1.0,
+                        engine_used  TEXT NOT NULL DEFAULT 'manual',
+                        timestamp    TEXT NOT NULL,
+                        approved_by  TEXT NOT NULL DEFAULT 'user',
+                        client_id    TEXT NOT NULL DEFAULT '',
+                        UNIQUE(text, label, client_id)
+                    );
+                    INSERT OR IGNORE INTO training_data_new
+                        (id, text, label, confidence, engine_used, timestamp,
+                         approved_by, client_id)
+                        SELECT id, text, label, confidence, engine_used,
+                               timestamp, approved_by, ''
+                        FROM training_data;
+                    DROP TABLE training_data;
+                    ALTER TABLE training_data_new RENAME TO training_data;
+                    """
+                )
+
     def reset_all(self) -> None:
         """Drop every data table and recreate the empty schema.
 
@@ -155,6 +230,7 @@ class Storage:
                 """
                 DROP TABLE IF EXISTS rules;
                 DROP TABLE IF EXISTS learned_mappings;
+                DROP TABLE IF EXISTS blocked_mappings;
                 DROP TABLE IF EXISTS rule_notes;
                 DROP TABLE IF EXISTS training_data;
                 DROP TABLE IF EXISTS run_history;
@@ -274,25 +350,43 @@ class Storage:
         )
 
     # ----------------------------------------------------- learned mappings
-    def upsert_learned_mapping(self, signature: str, account_code: str) -> None:
-        """Record (or reinforce) a confirmed text->code mapping."""
+    def upsert_learned_mapping(self, signature: str, account_code: str,
+                               client_id: Optional[str] = None) -> None:
+        """Record (or reinforce) a confirmed text->code mapping.
+
+        ``client_id=None`` writes to the shared/default client (``''``); a
+        value scopes the mapping to that client. On a conflict the latest human
+        decision wins (the code is updated) and the hit counter increments.
+        """
         now = _utcnow_iso()
+        cid = client_id or ""
         with self._lock, self._conn:
             self._conn.execute(
-                """INSERT INTO learned_mappings (signature, account_code, hits, last_seen)
-                   VALUES (?,?,1,?)
-                   ON CONFLICT(signature) DO UPDATE SET
+                """INSERT INTO learned_mappings
+                       (signature, account_code, hits, last_seen, client_id)
+                   VALUES (?,?,1,?,?)
+                   ON CONFLICT(signature, client_id) DO UPDATE SET
                        hits = hits + 1,
                        account_code = excluded.account_code,
                        last_seen = excluded.last_seen""",
-                (signature, account_code, now),
+                (signature, account_code, now, cid),
             )
 
-    def list_learned_mappings(self) -> List[LearnedMapping]:
+    def list_learned_mappings(
+            self, client_id: Optional[str] = None) -> List[LearnedMapping]:
+        """List mappings, most-hit first.
+
+        ``client_id=None`` returns every mapping (backward compatible); a value
+        narrows to that client's mappings plus the shared/default ones.
+        """
+        query = "SELECT * FROM learned_mappings"
+        params: List[object] = []
+        if client_id is not None:
+            query += " WHERE client_id IN ('', ?)"
+            params.append(client_id)
+        query += " ORDER BY hits DESC"
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT * FROM learned_mappings ORDER BY hits DESC"
-            ).fetchall()
+            rows = self._conn.execute(query, params).fetchall()
         return [
             LearnedMapping(
                 id=r["id"],
@@ -300,17 +394,85 @@ class Storage:
                 account_code=r["account_code"],
                 hits=r["hits"],
                 last_seen=datetime.fromisoformat(r["last_seen"]),
+                client_id=(r["client_id"] or None),
             )
             for r in rows
         ]
 
-    def get_learned_lookup(self) -> dict[str, str]:
-        """Return a {signature: account_code} dict for fast lookups."""
-        return {m.signature: m.account_code for m in self.list_learned_mappings()}
+    def get_learned_lookup(self, client_id: Optional[str] = None) -> dict[str, str]:
+        """Return a {signature: account_code} dict for fast lookups.
+
+        With a ``client_id``, shared mappings are overlaid with that client's
+        mappings (the client's win on conflict). Without one, every mapping is
+        merged (highest-hit wins) — the historical behaviour.
+        """
+        mappings = self.list_learned_mappings(client_id=client_id)
+        lookup: dict[str, str] = {}
+        if client_id is None:
+            # Ordered hits DESC — first occurrence (most-hit) wins.
+            for m in mappings:
+                lookup.setdefault(m.signature, m.account_code)
+            return lookup
+        # Shared ('' -> None) first, then the client's own mappings override.
+        for m in sorted(mappings, key=lambda m: (m.client_id is not None,
+                                                 -m.hits)):
+            lookup[m.signature] = m.account_code
+        return lookup
+
+    def delete_learned_mapping(self, mapping_id: int) -> bool:
+        """Delete one learned mapping by id. Returns True when a row was removed.
+
+        Deleting stops the mapping from firing on the next run.
+        """
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM learned_mappings WHERE id=?", (int(mapping_id),))
+            return bool(cur.rowcount)
 
     def clear_learned_mappings(self) -> None:
         with self._lock, self._conn:
             self._conn.execute("DELETE FROM learned_mappings")
+
+    # ----------------------------------------------------- blocked mappings
+    def block_mapping(self, signature: str, account_code: str,
+                      client_id: Optional[str] = None) -> None:
+        """Record a rejected text->code pairing so it is never re-suggested."""
+        signature = (signature or "").strip()
+        account_code = (account_code or "").strip()
+        if not signature or not account_code:
+            return
+        with self._lock, self._conn:
+            self._conn.execute(
+                """INSERT INTO blocked_mappings
+                       (signature, account_code, client_id, created_at)
+                   VALUES (?,?,?,?)
+                   ON CONFLICT(signature, account_code, client_id) DO NOTHING""",
+                (signature, account_code, client_id or "", _utcnow_iso()),
+            )
+
+    def get_blocked_lookup(self, client_id: Optional[str] = None) -> dict:
+        """Return {signature: {blocked codes}} for the engine to honour."""
+        query = "SELECT signature, account_code FROM blocked_mappings"
+        params: List[object] = []
+        if client_id is not None:
+            query += " WHERE client_id IN ('', ?)"
+            params.append(client_id)
+        with self._lock:
+            rows = self._conn.execute(query, params).fetchall()
+        out: dict = {}
+        for r in rows:
+            out.setdefault(r["signature"], set()).add(r["account_code"])
+        return out
+
+    def count_blocked_mappings(self) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS c FROM blocked_mappings").fetchone()
+        return int(row["c"]) if row else 0
+
+    def clear_blocked_mappings(self) -> None:
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM blocked_mappings")
 
     # ------------------------------------------------------------ rule notes
     def upsert_rule_note(self, base_sig: str, notes: str) -> None:
@@ -363,8 +525,9 @@ class Storage:
         confidence: float = 1.0,
         engine_used: str = "manual",
         approved_by: str = "user",
+        client_id: Optional[str] = None,
     ) -> None:
-        """Persist a labelled example (idempotent on (text, label))."""
+        """Persist a labelled example (idempotent on (text, label, client))."""
         text = (text or "").strip()
         label = (label or "").strip()
         if not text or not label:
@@ -373,33 +536,65 @@ class Storage:
         with self._lock, self._conn:
             self._conn.execute(
                 """INSERT INTO training_data
-                   (text, label, confidence, engine_used, timestamp, approved_by)
-                   VALUES (?,?,?,?,?,?)
-                   ON CONFLICT(text, label) DO UPDATE SET
+                   (text, label, confidence, engine_used, timestamp, approved_by,
+                    client_id)
+                   VALUES (?,?,?,?,?,?,?)
+                   ON CONFLICT(text, label, client_id) DO UPDATE SET
                        confidence = excluded.confidence,
                        engine_used = excluded.engine_used,
                        timestamp = excluded.timestamp,
                        approved_by = excluded.approved_by""",
-                (text, label, float(confidence), engine_used, now, approved_by),
+                (text, label, float(confidence), engine_used, now, approved_by,
+                 client_id or ""),
             )
 
-    def count_training_data(self) -> int:
+    def count_training_data(self, client_id: Optional[str] = None) -> int:
+        """Number of training examples (a client id includes shared examples)."""
+        query = "SELECT COUNT(*) AS c FROM training_data"
+        params: List[object] = []
+        if client_id is not None:
+            query += " WHERE client_id IN ('', ?)"
+            params.append(client_id)
         with self._lock:
-            row = self._conn.execute(
-                "SELECT COUNT(*) AS c FROM training_data").fetchone()
+            row = self._conn.execute(query, params).fetchone()
         return int(row["c"]) if row else 0
 
-    def distinct_labels(self) -> List[str]:
+    def count_training_since(self, iso_timestamp: str,
+                             client_id: Optional[str] = None) -> int:
+        """Examples captured at/after an ISO timestamp (for the train banner)."""
+        if not iso_timestamp:
+            return self.count_training_data(client_id)
+        query = "SELECT COUNT(*) AS c FROM training_data WHERE timestamp >= ?"
+        params: List[object] = [iso_timestamp]
+        if client_id is not None:
+            query += " AND client_id IN ('', ?)"
+            params.append(client_id)
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT DISTINCT label FROM training_data ORDER BY label").fetchall()
+            row = self._conn.execute(query, params).fetchone()
+        return int(row["c"]) if row else 0
+
+    def distinct_labels(self, client_id: Optional[str] = None) -> List[str]:
+        query = "SELECT DISTINCT label FROM training_data"
+        params: List[object] = []
+        if client_id is not None:
+            query += " WHERE client_id IN ('', ?)"
+            params.append(client_id)
+        query += " ORDER BY label"
+        with self._lock:
+            rows = self._conn.execute(query, params).fetchall()
         return [r["label"] for r in rows]
 
-    def list_training_data(self, limit: int = 1000) -> List[TrainingExample]:
+    def list_training_data(self, limit: int = 1000,
+                           client_id: Optional[str] = None) -> List[TrainingExample]:
+        query = "SELECT * FROM training_data"
+        params: List[object] = []
+        if client_id is not None:
+            query += " WHERE client_id IN ('', ?)"
+            params.append(client_id)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT * FROM training_data ORDER BY id DESC LIMIT ?",
-                (limit,)).fetchall()
+            rows = self._conn.execute(query, params).fetchall()
         return [
             TrainingExample(
                 id=r["id"], text=r["text"], label=r["label"],
@@ -410,11 +605,19 @@ class Storage:
             for r in rows
         ]
 
-    def get_training_xy(self) -> Tuple[List[str], List[str]]:
-        """Return (texts, labels) for model training."""
+    def get_training_xy(self, client_id: Optional[str] = None) -> Tuple[List[str], List[str]]:
+        """Return (texts, labels) for model training.
+
+        ``client_id=None`` trains on everything (historical behaviour); a value
+        trains on that client's examples plus the shared/default ones.
+        """
+        query = "SELECT text, label FROM training_data"
+        params: List[object] = []
+        if client_id is not None:
+            query += " WHERE client_id IN ('', ?)"
+            params.append(client_id)
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT text, label FROM training_data").fetchall()
+            rows = self._conn.execute(query, params).fetchall()
         texts = [r["text"] for r in rows]
         labels = [r["label"] for r in rows]
         return texts, labels
