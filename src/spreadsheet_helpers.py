@@ -115,14 +115,15 @@ def build_work_df(loaded: LoadedData, storage: Storage, config: Config) -> pd.Da
     # Fold notes into _sim_text (and (re)build _base_sig).
     recompute_sim_text(df, loaded.text_columns, config)
 
-    # Meta columns.
+    # Meta columns. GROUP_COL holds ints or "" — force object dtype so both
+    # are accepted (pandas 3 would otherwise create a strict string column).
     df[SELECT_COL] = False
     df[CONF_COL] = 0.0
     df[ENGINE_COL] = ""
     df[ACTION_COL] = ""
     df[WHY_COL] = ""
     df[SUGGESTED_COL] = ""
-    df[GROUP_COL] = ""
+    df[GROUP_COL] = pd.Series([""] * len(df), index=df.index, dtype=object)
 
     # Pre-mark seed rows (already coded) so the metrics/filters are correct
     # before the first run.
@@ -157,10 +158,13 @@ def ensure_state_columns(df: pd.DataFrame) -> pd.DataFrame:
     if RULE_NOTES_COL not in df.columns:
         df[RULE_NOTES_COL] = ""
     defaults = {SELECT_COL: False, CONF_COL: 0.0, ENGINE_COL: "",
-                ACTION_COL: "", WHY_COL: "", SUGGESTED_COL: "", GROUP_COL: ""}
+                ACTION_COL: "", WHY_COL: "", SUGGESTED_COL: ""}
     for col, default in defaults.items():
         if col not in df.columns:
             df[col] = default
+    if GROUP_COL not in df.columns:
+        # ints or "" — object dtype so both are accepted.
+        df[GROUP_COL] = pd.Series([""] * len(df), index=df.index, dtype=object)
     return df
 
 
