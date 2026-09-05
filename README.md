@@ -238,6 +238,8 @@ code_down_ML/
 ├── src/                        # engines and business logic
 │   ├── config.py               #   typed config, env vars, data-dir selection
 │   ├── data_loader.py          #   read/normalize files, resolve New Account
+│   ├── ingest_profiles.py      #   AppFolio/QuickBooks export-shape detection
+│   ├── insights.py             #   read-only coaching metrics (pure functions)
 │   ├── rules_manager.py        #   keyword rules, matching, account knowledge
 │   ├── fill_down_engine.py     #   the decision cascade + confidence scoring
 │   ├── similarity.py           #   embeddings (semantic or TF-IDF) + grouping
@@ -248,8 +250,9 @@ code_down_ML/
 │   └── exporter.py             #   Excel/CSV export
 ├── ui/                         # Streamlit views
 │   ├── landing.py              #   dashboard: client name, upload, sample data
-│   ├── spreadsheet.py          #   main grid, toolbar, run modes, export
+│   ├── spreadsheet.py          #   main grid, toolbar, run modes, export, append
 │   ├── review.py               #   review workspace: groups, bulk approve/reject
+│   ├── insights.py             #   read-only coaching metrics page
 │   ├── panels.py               #   Rules / Models / History modals
 │   ├── rule_creation.py        #   rule builder dialog + suggestion banners
 │   ├── sidebar.py              #   nav, engine status, advanced tuning
