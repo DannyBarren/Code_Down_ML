@@ -82,8 +82,11 @@ def render_landing() -> None:
                             Path(uploaded.name).suffix.lower(),
                             sheet=(sheet if sheets else 0))
                     work = st.session_state["work_df"]
+                    loaded = st.session_state["loaded"]
+                    from src.ingest_profiles import profile_chip
                     common.set_flash(
-                        f"Loaded '{uploaded.name}' ({len(work):,} rows).")
+                        f"Loaded '{uploaded.name}' ({len(work):,} rows) — "
+                        f"{profile_chip(loaded.source_profile)}.")
                     st.session_state["view"] = "spreadsheet"
                     st.session_state["panel"] = None
                     st.rerun()
