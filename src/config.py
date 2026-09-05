@@ -142,6 +142,9 @@ class MLConfig(BaseModel):
     test_size: float = 0.2
     # Where versioned trained models live (relative to project root).
     model_store_dir: str = "data/models"
+    # Offer a "train now" reminder after this many new approvals since the last
+    # successful train (0 = never). Training itself stays user-triggered.
+    auto_train_every: int = 25
 
 
 class ColumnsConfig(BaseModel):
@@ -149,8 +152,21 @@ class ColumnsConfig(BaseModel):
     text_columns: List[str] = Field(default_factory=list)
     amount: List[str] = Field(default_factory=lambda: ["Amount"])
     date: List[str] = Field(default_factory=lambda: ["Date"])
+    # Vendor-first: Name and Memo carry the strongest signal on real ledgers.
     similarity_columns: List[str] = Field(
-        default_factory=lambda: ["Description", "Name", "Memo"]
+        default_factory=lambda: ["Name", "Memo", "Description", "Account",
+                                 "Category"]
+    )
+    # Preference order for mining keyword-rule suggestions (vendor first).
+    keyword_source: List[str] = Field(
+        default_factory=lambda: ["Name", "Memo", "Description", "Payee",
+                                 "Split", "Account", "Category"]
+    )
+    # Never mined for keyword suggestions unless explicitly opted into via
+    # keyword_source. Any header containing "note" is also excluded.
+    keyword_source_exclude: List[str] = Field(
+        default_factory=lambda: ["Notes", "Note", "Internal Notes",
+                                 "Rule Notes"]
     )
 
 
@@ -177,6 +193,9 @@ class Config(BaseModel):
     columns: ColumnsConfig = Field(default_factory=ColumnsConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    # Optional NARPM-style glossary: canonical code -> {"name": ..., "keywords":
+    # [...]}. Enriches rationales and rule suggestions; empty = disabled.
+    account_glossary: Dict[str, object] = Field(default_factory=dict)
 
     # Resolved absolute paths (filled in during load).
     project_root: str = str(PROJECT_ROOT)
@@ -192,6 +211,33 @@ class Config(BaseModel):
         live and every consumer immediately picks up the change.
         """
         return list(self.columns.similarity_columns)
+
+    def keyword_source_order(self) -> List[str]:
+        """Preference order for mining keyword-rule suggestions."""
+        return list(self.columns.keyword_source)
+
+    def keyword_source_excluded(self) -> set:
+        """Lowercased headers never mined for keyword suggestions."""
+        return {str(c).strip().lower() for c in self.columns.keyword_source_exclude}
+
+    def glossary_entry(self, code: object) -> Dict[str, object]:
+        """Glossary entry for an account code (``{}`` when unknown/disabled).
+
+        Lookup is normalised (``6100 a`` finds the ``6100A`` entry) and never
+        raises on a malformed glossary — an empty/bad glossary simply disables
+        the enrichment.
+        """
+        if not self.account_glossary:
+            return {}
+        try:
+            from utils.account_codes import normalize_code
+            key = normalize_code(code)
+            for raw_key, entry in self.account_glossary.items():
+                if normalize_code(raw_key) == key and isinstance(entry, dict):
+                    return entry
+        except Exception:  # noqa: BLE001 - glossary is best-effort
+            return {}
+        return {}
 
     # ------------------------------------------------------------------ paths
     def abs_db_path(self) -> Path:

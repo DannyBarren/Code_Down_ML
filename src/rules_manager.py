@@ -126,6 +126,123 @@ class RuleMatch:
     rule: KeywordRule
 
 
+def record_human_approval(
+    storage: Storage,
+    signature: str,
+    account_code: str,
+    *,
+    confidence: float = 1.0,
+    engine_used: str = "manual",
+    approved_by: str = "user",
+    client_id: Optional[str] = None,
+) -> bool:
+    """The single learning path for every human decision.
+
+    One approval writes all three kinds of memory:
+      1. a **learned mapping** (exact signature -> code; last human write wins),
+      2. a **training example** for the ML models,
+      3. a reinforcement of the account's knowledge profile.
+
+    Returns False (and writes nothing) for blank signatures/codes. Never
+    raises for the profile reinforcement — learning must not break approvals.
+    """
+    signature = (signature or "").strip()
+    code = normalize_code(account_code)
+    if not signature or not code:
+        return False
+    storage.upsert_learned_mapping(signature, code, client_id=client_id)
+    storage.add_training_example(
+        text=signature, label=code, confidence=float(confidence),
+        engine_used=engine_used, approved_by=approved_by, client_id=client_id)
+    try:
+        RulesManager(storage).record_account_usage(
+            code, sample_text=signature, client_id=client_id)
+    except Exception as exc:  # noqa: BLE001 - best-effort reinforcement
+        logger.warning("approval_profile_reinforce_failed", error=str(exc))
+    return True
+
+
+def near_miss_suggestions(
+    results: List[RuleRunResult],
+    df: pd.DataFrame,
+    rules: List[KeywordRule],
+    text_columns: Optional[List[str]] = None,
+    min_overlap: float = 0.5,
+    max_suggestions: int = 10,
+) -> List[dict]:
+    """Surface "near misses" after a strict rule run — never auto-fills.
+
+    For every blank row where no rule fired, find the enabled rule whose
+    phrases have the highest token overlap with the row's text. When at least
+    ``min_overlap`` of a phrase's tokens are present (but the rule did not
+    match), the row is evidence the rule is *almost* right — e.g. a spelling
+    variant or a missing phrase. Returns one suggestion per rule, with the
+    affected row indices and the most common row tokens the rule is missing,
+    so the user can decide to widen the rule. Pure and deterministic.
+    """
+    active = [r for r in rules if r.enabled]
+    if not active:
+        return []
+
+    # Pre-compute each rule's phrase token sets.
+    rule_phrases: List[tuple] = []
+    for rule in active:
+        for phrase in rule.match_phrases():
+            toks = set(_norm_space(phrase).split())
+            toks = {t for t in toks if t and not t.isdigit()}
+            if toks:
+                rule_phrases.append((rule, phrase, toks))
+    if not rule_phrases:
+        return []
+
+    best_per_row: dict = {}  # row_index -> (overlap, rule, missing_tokens)
+    for r in results:
+        if r.status != "no_rule_match":
+            continue
+        try:
+            row = df.iloc[r.row_index]
+        except (IndexError, KeyError):
+            continue
+        text = RulesManager.build_match_text(row, text_columns)
+        row_toks = [t for t in _norm_space(text).split()
+                    if t and not t.isdigit() and t not in _KEYWORD_STOPWORDS]
+        if not row_toks:
+            continue
+        row_tok_set = set(row_toks)
+        for rule, _phrase, ptoks in rule_phrases:
+            overlap = len(ptoks & row_tok_set) / len(ptoks)
+            if overlap < min_overlap:
+                continue
+            missing = [t for t in row_toks if t not in ptoks]
+            cur = best_per_row.get(r.row_index)
+            if cur is None or overlap > cur[0]:
+                best_per_row[r.row_index] = (overlap, rule, missing)
+
+    # Aggregate by rule: which rows nearly matched it, and which tokens recur.
+    by_rule: dict = {}
+    for row_idx, (overlap, rule, missing) in best_per_row.items():
+        entry = by_rule.setdefault(
+            rule.id,
+            {"rule_id": rule.id, "rule_keyword": rule.keyword,
+             "account_code": rule.account_code, "rows": [],
+             "overlap": 0.0, "token_counts": {}})
+        entry["rows"].append(row_idx)
+        entry["overlap"] = max(entry["overlap"], overlap)
+        for tok in missing[:6]:
+            entry["token_counts"][tok] = entry["token_counts"].get(tok, 0) + 1
+
+    out: List[dict] = []
+    for entry in by_rule.values():
+        common = sorted(entry.pop("token_counts").items(),
+                        key=lambda kv: (-kv[1], kv[0]))
+        entry["suggested_tokens"] = [t for t, _ in common[:4]]
+        entry["rows"] = sorted(entry["rows"])
+        entry["overlap"] = round(float(entry["overlap"]), 3)
+        out.append(entry)
+    out.sort(key=lambda e: (-len(e["rows"]), -e["overlap"], e["rule_keyword"]))
+    return out[:max_suggestions]
+
+
 def get_rule_application_summary(results: List[RuleRunResult]) -> dict:
     """Summarise a rule run: protected vs filled vs left-blank + success rate.
 
@@ -313,18 +430,35 @@ class RulesManager:
     @staticmethod
     def _fuzzy_contains(cand_space: str, key_space: str,
                         cutoff: float = _FUZZY_CUTOFF) -> bool:
-        """True if a window of the candidate ~matches the keyword (typo-tolerant)."""
+        """Token-aware, typo-tolerant match of the keyword against a fragment.
+
+        Compares the keyword against **whole tokens** (or same-width token
+        windows) of the candidate — never substrings — so a vendor rule like
+        "Shaw Media" fires on the misspelling "Shaw Medai" but does *not* fire
+        on an address token that merely contains the same letters ("shaw" in
+        "123 Shawnee Dr"). Multi-word phrases slide a window of the same token
+        width across the candidate.
+        """
         if not key_space or not cand_space:
             return False
-        if key_space in cand_space:
-            return True
         ktokens = key_space.split()
         ctokens = cand_space.split()
         if not ktokens or not ctokens:
             return False
+
+        if len(ktokens) == 1:
+            key = ktokens[0]
+            return any(
+                difflib.SequenceMatcher(None, key, tok).ratio() >= cutoff
+                for tok in ctokens
+            )
+
         width = len(ktokens)
-        last = max(1, len(ctokens) - width + 1)
-        for start in range(last):
+        if len(ctokens) < width:
+            # Candidate shorter than the phrase: compare the whole fragment.
+            return difflib.SequenceMatcher(None, key_space, cand_space).ratio() \
+                >= cutoff
+        for start in range(len(ctokens) - width + 1):
             window = " ".join(ctokens[start:start + width])
             if difflib.SequenceMatcher(None, key_space, window).ratio() >= cutoff:
                 return True
@@ -590,14 +724,18 @@ class RulesManager:
         df: pd.DataFrame,
         client_id: Optional[str] = None,
         source_text_col: str = "Description",
+        source_text_cols: Optional[List[str]] = None,
     ) -> int:
         """Turn pre-filled ``New Account`` rows into high-priority exact rules.
 
         Each coded row becomes a reusable exact-match rule (``priority=10`` so it
-        wins over broad ``contains`` rules). The rule keyword is taken from
-        ``source_text_col`` when present, else the first meaningful text column on
-        the row. Duplicates (same phrase + code, or an already-existing rule) are
-        skipped. Returns the number of new rules created.
+        wins over broad ``contains`` rules). The rule keyword is taken from the
+        first column with a value in ``source_text_cols`` preference order
+        (Name → Memo → Description … — never note-like columns); when that list
+        is omitted, ``source_text_col`` is tried, then the first meaningful text
+        column on the row. Duplicates (same phrase + code, or an
+        already-existing rule) are skipped. Returns the number of new rules
+        created.
         """
         if NEW_ACCOUNT_COL not in df.columns:
             return 0
@@ -613,15 +751,22 @@ class RulesManager:
 
             row = df.loc[idx]
             text = ""
-            if source_text_col in df.columns and _has_value(row.get(source_text_col)):
-                text = str(row.get(source_text_col)).strip()
-            else:
-                for c in df.columns:
-                    if str(c).startswith("_") or c in (NEW_ACCOUNT_COL, RULE_NOTES_COL):
-                        continue
-                    if _has_value(row.get(c)):
-                        text = str(row.get(c)).strip()
+            if source_text_cols:
+                for col in source_text_cols:
+                    if col in df.columns and _has_value(row.get(col)):
+                        text = str(row.get(col)).strip()
                         break
+            if not text:
+                if source_text_col in df.columns \
+                        and _has_value(row.get(source_text_col)):
+                    text = str(row.get(source_text_col)).strip()
+                else:
+                    for c in df.columns:
+                        if str(c).startswith("_") or c in (NEW_ACCOUNT_COL, RULE_NOTES_COL):
+                            continue
+                        if _has_value(row.get(c)):
+                            text = str(row.get(c)).strip()
+                            break
             if not text:
                 continue
 

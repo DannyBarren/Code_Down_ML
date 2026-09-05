@@ -134,6 +134,8 @@ def init_state(config) -> None:
         "rule_prompt": None,
         "dismissed_rule_prompts": [],
         "hide_rule_suggestions": False,
+        "memory_bootstrap_dismissed": False,
+        "ingest_banner_dismissed": False,
         "flash": None,
         "show_install_page": False,
         "confirm_action": None,       # None | clear_spreadsheet | start_fresh
@@ -162,13 +164,22 @@ def show_flash() -> None:
 # --------------------------------------------------------------------------- #
 # Engine + loading
 # --------------------------------------------------------------------------- #
+def current_client_id() -> Optional[str]:
+    """The active client/project name as a storage client id (None = shared)."""
+    name = st.session_state.get("client_name") or ""
+    return name.strip() or None
+
+
 def make_engine() -> FillDownEngine:
     config, storage, rules, mm, _ = services()
+    client_id = current_client_id()
     return FillDownEngine(
         config, rules,
-        learned_lookup=storage.get_learned_lookup(),
+        learned_lookup=storage.get_learned_lookup(client_id=client_id),
         model_manager=mm,
         mode=st.session_state.get("ml_mode", config.ml.mode),
+        client_id=client_id,
+        blocked_lookup=storage.get_blocked_lookup(client_id=client_id),
     )
 
 
@@ -180,11 +191,14 @@ def make_hybrid_engine() -> FillDownEngine:
     similar transactions, using learned memory + semantic similarity only.
     """
     config, storage, rules, _mm, _ = services()
+    client_id = current_client_id()
     return FillDownEngine(
         config, rules,
-        learned_lookup=storage.get_learned_lookup(),
+        learned_lookup=storage.get_learned_lookup(client_id=client_id),
         model_manager=None,
         mode="similarity_only",
+        client_id=client_id,
+        blocked_lookup=storage.get_blocked_lookup(client_id=client_id),
     )
 
 
@@ -208,6 +222,8 @@ def load_into_session(raw: bytes, name: str, ext: str, sheet=0) -> None:
     st.session_state["rule_prompt"] = None
     st.session_state["dismissed_rule_prompts"] = []
     st.session_state["rule_panel_open"] = False
+    st.session_state["memory_bootstrap_dismissed"] = False
+    st.session_state["ingest_banner_dismissed"] = False
 
 
 def reset_file_session() -> None:
@@ -234,6 +250,8 @@ def reset_file_session() -> None:
     st.session_state["rule_prompt"] = None
     st.session_state["dismissed_rule_prompts"] = []
     st.session_state["hide_rule_suggestions"] = False
+    st.session_state["memory_bootstrap_dismissed"] = False
+    st.session_state["ingest_banner_dismissed"] = False
     st.session_state["export_open"] = False
     st.session_state["panel"] = None
     st.session_state["confirm_action"] = None
@@ -394,10 +412,16 @@ def render_optional_setup() -> None:
 # --------------------------------------------------------------------------- #
 # Export summary table
 # --------------------------------------------------------------------------- #
-def export_summary_df(counts: dict, loaded, backend: str, mode: str) -> pd.DataFrame:
+def export_summary_df(counts: dict, loaded, backend: str, mode: str,
+                      work=None, audit: Optional[dict] = None) -> pd.DataFrame:
+    """The 'Code Down Summary' sheet: run mode, counts by engine, timestamp."""
+    from datetime import datetime, timezone
+
     rows = [
         ("File", loaded.source_name),
         ("Client", st.session_state.get("client_name") or "—"),
+        ("Exported at", datetime.now(timezone.utc).strftime(
+            "%Y-%m-%d %H:%M UTC")),
         ("Total transactions", counts["total"]),
         ("Already coded (examples)", counts["seeds"]),
         ("Filled automatically", counts["auto_filled"]),
@@ -409,6 +433,16 @@ def export_summary_df(counts: dict, loaded, backend: str, mode: str) -> pd.DataF
         ("Matching engine", backend or "—"),
         ("Decision mode", mode or "—"),
     ]
+    # Counts by engine (rules / memory / similarity / AI / manual …).
+    if work is not None:
+        try:
+            for b in sh.engine_breakdown(work):
+                rows.append((f"Coded by — {b['engine']}", b["rows"]))
+        except Exception:  # noqa: BLE001 - summary is best-effort
+            pass
+    if audit:
+        fired = int(audit.get("keyword_filled", 0) or 0)
+        rows.append(("Rules fired (last rule run)", fired))
     return pd.DataFrame(rows, columns=["Metric", "Value"]).astype(str)
 
 

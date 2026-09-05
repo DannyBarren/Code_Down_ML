@@ -74,6 +74,10 @@ ml:
   test_size: 0.2
   # Where versioned trained models are stored.
   model_store_dir: "data/models"
+  # After this many new approvals since the last successful train, offer a
+  # one-click "train now" banner (0 = never offer). Training stays manual;
+  # the banner is only a reminder.
+  auto_train_every: 25
 
 # ---------------------------------------------------------------------------
 # Column mapping
@@ -86,7 +90,26 @@ columns:
   amount: ["Amount", "Amount (USD)", "Debit", "Credit"]
   date: ["Date", "Transaction Date", "Posting Date"]
   # Columns combined (in order) to build the text used for embeddings.
-  similarity_columns: ["Description", "Name", "Memo", "Account", "Category"]
+  # Vendor-first: Name and Memo carry the strongest signal on real ledgers.
+  similarity_columns: ["Name", "Memo", "Description", "Account", "Category"]
+  # Columns mined for keyword-rule suggestions, in preference order. The
+  # vendor name is the most distinctive signal, so Name leads.
+  keyword_source: ["Name", "Memo", "Description", "Payee", "Split", "Account", "Category"]
+  # Never mined for keyword suggestions: internal coach notes leak into rules
+  # otherwise. Any header containing "note" is excluded unless the user
+  # explicitly lists it in keyword_source above.
+  keyword_source_exclude: ["Notes", "Note", "Internal Notes", "Rule Notes"]
+
+# ---------------------------------------------------------------------------
+# Optional account glossary (NARPM-style). Maps a canonical account code to its
+# official name and example keywords. Used only to enrich rationales and rule
+# suggestions; an empty mapping disables the feature (never a hard failure).
+# ---------------------------------------------------------------------------
+account_glossary: {}
+# Example:
+# account_glossary:
+#   "6322": {name: "Call Center Services", keywords: ["call center", "answering service"]}
+#   "6699": {name: "Miscellaneous", keywords: ["misc"]}
 
 # ---------------------------------------------------------------------------
 # Persistence
