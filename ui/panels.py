@@ -467,7 +467,8 @@ def _render_account_knowledge(rules_manager) -> None:
 # --------------------------------------------------------------------------- #
 def render_auto_train_banner() -> None:
     """Public wrapper so the spreadsheet view can show the train reminder."""
-    config, storage, _rules, model_manager, logger = services()
+    config, storage, _rules, _mm, logger = services()
+    model_manager = common.model_manager_for(common.current_client_id())
     _render_auto_train_banner(config, storage, model_manager, logger)
 
 
@@ -587,13 +588,20 @@ def _render_memory_inspector(storage, model_manager, client_id) -> None:
 
 
 def page_models() -> None:
-    config, storage, rules, model_manager, logger = services()
+    config, storage, rules, _global_mm, logger = services()
     client_id = common.current_client_id()
+    # The Models panel reflects the active scope: the current client's model
+    # store when a client is selected, otherwise the shared/global store.
+    model_manager = common.model_manager_for(client_id)
 
     st.write(
         "As codes are approved, the application trains a model in the background "
         "that improves over time. If the model underperforms, it falls back to "
         "the TF-IDF + LogReg matcher automatically.")
+    st.caption(
+        f"Scope: **{client_id or 'shared (all clients)'}** — training uses this "
+        "client's approvals plus the shared pool; predictions try the client "
+        "model first, then the global one, then similarity.")
 
     n_examples = model_manager.training_count()
     n_labels = len(storage.distinct_labels())

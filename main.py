@@ -1,4 +1,4 @@
-"""ProfitCoach — Fill Down Automation v1.0.
+"""ProfitCoach — Fill Down Automation v1.1.
 
 Streamlit entry point (thin router).
 
@@ -119,7 +119,7 @@ with st.sidebar:
     st.divider()
     st.button("📖 User Guide", width="stretch", type="primary",
               key="open_user_guide", on_click=guide.open_guide)
-    st.caption("Code_Down_ML • v1.0")
+    st.caption(f"Code_Down_ML • v{config.app.version}")
 
 # Full-page User Guide takeover (mirrors the installer screen pattern). When
 # open it replaces only the main content; closing returns to the exact same
@@ -151,4 +151,4 @@ if _panel:
 
 # Footer on the main app pages.
 st.divider()
-st.caption("© 2026 Danny Barren — Code_Down_ML v1.0")
+st.caption(f"© 2026 Danny Barren — Code_Down_ML v{config.app.version}")

@@ -15,7 +15,7 @@ from typing import Dict, List, Optional
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
-__version__ = "3.0.0"
+__version__ = "1.1.0"
 
 # Project root = the directory that contains config.yaml (one level above src/).
 PROJECT_ROOT = Path(__file__).resolve().parent.parent

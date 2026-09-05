@@ -170,16 +170,36 @@ def current_client_id() -> Optional[str]:
     return name.strip() or None
 
 
+# Per-client ModelManager cache (per process). Models live on disk under
+# data/models/clients/<safe_id>/; the managers themselves are cheap shells.
+_CLIENT_MODEL_MANAGERS: dict = {}
+
+
+def model_manager_for(client_id: Optional[str] = None):
+    """The ModelManager for a client scope (None/"" -> the global manager)."""
+    config, storage, _rules, global_mm, _ = services()
+    cid = (client_id or "").strip()
+    if not cid:
+        return global_mm
+    if cid not in _CLIENT_MODEL_MANAGERS:
+        from src.ml_classifier import ModelManager
+        _CLIENT_MODEL_MANAGERS[cid] = ModelManager(config, storage,
+                                                   client_id=cid)
+    return _CLIENT_MODEL_MANAGERS[cid]
+
+
 def make_engine() -> FillDownEngine:
     config, storage, rules, mm, _ = services()
     client_id = current_client_id()
+    client_mm = model_manager_for(client_id) if client_id else None
     return FillDownEngine(
         config, rules,
         learned_lookup=storage.get_learned_lookup(client_id=client_id),
-        model_manager=mm,
+        model_manager=client_mm if client_mm is not None else mm,
         mode=st.session_state.get("ml_mode", config.ml.mode),
         client_id=client_id,
         blocked_lookup=storage.get_blocked_lookup(client_id=client_id),
+        fallback_model_manager=mm if client_mm is not None else None,
     )
 
 
@@ -354,6 +374,7 @@ def reset_demo_data() -> None:
     from utils import demo_utils
     config, storage, rules, mm, _ = services()
     demo_utils.force_reset(config, storage, mm)
+    _CLIENT_MODEL_MANAGERS.clear()  # drop cached per-client managers too
     reset_file_session()
     set_flash("Demo data cleared — the app is back to a brand-new state.")
 

@@ -82,6 +82,7 @@ class FillDownEngine:
         mode: Optional[str] = None,
         client_id: Optional[str] = None,
         blocked_lookup: Optional[Dict[str, set]] = None,
+        fallback_model_manager=None,
     ):
         self.config = config
         self.rules = rules_manager
@@ -89,26 +90,67 @@ class FillDownEngine:
         self.model_manager = model_manager
         self.mode = mode  # raw user choice; None -> config.ml.mode
         self.client_id = client_id
+        # Global model store, consulted when the client-scoped model is absent
+        # or not confident enough (see _predict_with_fallback).
+        self.fallback_model_manager = fallback_model_manager
         # signature -> set of account codes the user has rejected for it.
         self.blocked_lookup = blocked_lookup or {}
         self._insight_cache: Dict[str, str] = {}
 
     # --------------------------------------------------------- mode resolve
+    def _any_model(self) -> bool:
+        """True when the client scope or the global fallback has a model."""
+        if self.model_manager is not None and self.model_manager.has_model():
+            return True
+        return (self.fallback_model_manager is not None
+                and self.fallback_model_manager.has_model())
+
     def _effective_mode(self) -> str:
         """Resolve the active decision mode, defaulting safely to similarity."""
         if not self.config.ml.enabled:
             return "similarity_only"
-        if self.model_manager is None or not self.model_manager.has_model():
+        if not self._any_model():
             return "similarity_only"
         choice = (self.mode or self.config.ml.mode or "auto").lower()
         if choice == "auto":
             try:
-                return self.model_manager.progressive_mode()
+                if self.model_manager is not None \
+                        and self.model_manager.has_model():
+                    return self.model_manager.progressive_mode()
+                return self.fallback_model_manager.progressive_mode()
             except Exception:  # noqa: BLE001
                 return "similarity_only"
         if choice in _ML_MODES or choice == "similarity_only":
             return choice
         return "similarity_only"
+
+    def _predict_with_fallback(self, texts: List[str]):
+        """ML predictions with the client model first, global as fallback.
+
+        Per row: the client model's prediction is used when it produced a
+        label with confidence >= ``confidence.review_cutoff``; otherwise the
+        global model's prediction is taken (which may itself be empty). Any
+        failure yields "no prediction" — the similarity layer stays the safe
+        default. Never raises.
+        """
+        preds = self.model_manager.predict(texts)
+        fb = self.fallback_model_manager
+        if fb is None:
+            return preds
+        try:
+            global_preds = fb.predict(texts)
+        except Exception:  # noqa: BLE001 - fallback must never break a run
+            return preds
+        cutoff = self.config.confidence.review_cutoff
+        merged = []
+        for pred, gpred in zip(preds, global_preds):
+            label = getattr(pred, "label", None)
+            conf = float(getattr(pred, "confidence", 0.0) or 0.0)
+            if label is not None and conf >= cutoff:
+                merged.append(pred)
+            else:
+                merged.append(gpred)
+        return merged
 
     # --------------------------------------------------------------- public
     def run(self, data: LoadedData, progress_cb: ProgressCB = None) -> EngineResult:
@@ -144,7 +186,8 @@ class FillDownEngine:
             report(0.45, "Consulting trained ML model…")
             blank_idx = [i for i in range(n) if not seed_mask[i]]
             try:
-                preds = self.model_manager.predict([texts[i] for i in blank_idx])
+                preds = self._predict_with_fallback(
+                    [texts[i] for i in blank_idx])
                 ml_predictions = dict(zip(blank_idx, preds))
             except Exception as exc:  # noqa: BLE001 - never break on ML
                 logger.warning("ml_predict_failed", error=str(exc))

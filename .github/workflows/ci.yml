@@ -1,0 +1,51 @@
+# CI — core test suite + smoke test.
+#
+# Runs on the *core* dependency stack only (TF-IDF + LogReg). The optional
+# semantic/SetFit engines (torch, sentence-transformers, setfit) are
+# deliberately NOT installed — the app and tests degrade gracefully without
+# them, and keeping them out keeps CI fast and small.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install core dependencies + pytest
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Unit + integration + headless UI tests
+        run: pytest
+
+      - name: End-to-end smoke test (no Streamlit)
+        run: python smoke_test.py
+
+  sanity:
+    # Tiny guard rail: the workflow itself and the sanitized fixture exist.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Workflow file and sanitized fixture are present
+        run: |
+          test -f .github/workflows/ci.yml
+          test -f tests/fixtures/chrysalis_like.csv
+          # The real client ledger must never be committed.
+          ! ls "DEVELOPMENT ONLY_"* 2>/dev/null
+          ! find . -name "*Transaction Detail*.csv" | grep -q .
+          echo "sanity checks passed"
