@@ -83,6 +83,16 @@ def test_strict_run_button_click():
     assert at.session_state["view"] == "spreadsheet"
 
 
+def test_insights_view_renders():
+    """Sidebar Insights view renders with the sample data, no exception."""
+    at = _fresh_app()
+    _button(at, "Load sample data").click().run()
+    assert not at.exception, at.exception
+    _button_by_key(at, "nav_insights").click().run()
+    assert not at.exception, at.exception
+    assert at.session_state["view"] == "insights"
+
+
 def test_filters_and_pagination_no_error():
     at = _fresh_app()
     _button(at, "Load sample data").click().run()
