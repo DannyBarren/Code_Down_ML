@@ -73,6 +73,16 @@ def test_full_happy_path():
     assert at.session_state["last_result"] is not None
 
 
+def test_strict_run_button_click():
+    """The recommended Strict button runs without crashing (rules are seeded)."""
+    at = _fresh_app()
+    _button(at, "Load sample data").click().run()
+    assert not at.exception, at.exception
+    _button(at, "Run Rules — Strict").click().run()
+    assert not at.exception, at.exception
+    assert at.session_state["view"] == "spreadsheet"
+
+
 def test_filters_and_pagination_no_error():
     at = _fresh_app()
     _button(at, "Load sample data").click().run()

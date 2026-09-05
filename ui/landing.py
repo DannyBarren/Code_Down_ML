@@ -15,7 +15,7 @@ def render_landing() -> None:
     config, storage, rules, mm, logger = services()
 
     st.title("📊 Code_Down_ML")
-    st.caption("Intelligent Transaction Classification · v1.0")
+    st.caption(f"Intelligent Transaction Classification · v{config.app.version}")
 
     if common.demo_mode():
         st.success(

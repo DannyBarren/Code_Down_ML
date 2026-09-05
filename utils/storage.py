@@ -609,7 +609,10 @@ class Storage:
         """Return (texts, labels) for model training.
 
         ``client_id=None`` trains on everything (historical behaviour); a value
-        trains on that client's examples plus the shared/default ones.
+        trains on that client's examples plus the shared/default ones. When the
+        same text carries different labels in the shared pool and the client
+        scope, the **client's** label wins (last human write wins per scope) so
+        the client model is never trained on contradictory examples.
         """
         query = "SELECT text, label FROM training_data"
         params: List[object] = []
@@ -618,8 +621,26 @@ class Storage:
             params.append(client_id)
         with self._lock:
             rows = self._conn.execute(query, params).fetchall()
-        texts = [r["text"] for r in rows]
-        labels = [r["label"] for r in rows]
+        if client_id is None:
+            texts = [r["text"] for r in rows]
+            labels = [r["label"] for r in rows]
+            return texts, labels
+
+        # Shared rows first, then the client's rows override per text.
+        pairs: dict[str, str] = {}
+        client_rows: List[Tuple[str, str]] = []
+        for r in rows:
+            pairs[r["text"]] = r["label"]
+        with self._lock:
+            client_rows = [
+                (r["text"], r["label"]) for r in self._conn.execute(
+                    "SELECT text, label FROM training_data WHERE client_id=?",
+                    (client_id,)).fetchall()
+            ]
+        for text, label in client_rows:
+            pairs[text] = label
+        texts = list(pairs.keys())
+        labels = [pairs[t] for t in texts]
         return texts, labels
 
     def clear_training_data(self) -> None:
