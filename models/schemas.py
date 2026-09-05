@@ -137,6 +137,7 @@ class LearnedMapping(BaseModel):
 
     These accumulate over time as the user approves fill-downs, letting the
     tool get more accurate (and more confident) on each subsequent file.
+    ``client_id`` scopes a mapping to one client (``None`` = shared/default).
     """
 
     id: Optional[int] = None
@@ -144,6 +145,7 @@ class LearnedMapping(BaseModel):
     account_code: str
     hits: int = 1
     last_seen: Optional[datetime] = None
+    client_id: Optional[str] = None
 
 
 class TrainingExample(BaseModel):
