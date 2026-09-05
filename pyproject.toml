@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "code-down-ml"
-version = "1.0.0"
-description = "Code_Down_ML v1.0. Propagate account/category codes to similar transactions with a layered engine (keyword rules + learned memory + similarity + trainable ML)."
+version = "1.1.0"
+description = "Code_Down_ML v1.1. Strict-first, auditable transaction coding: keyword rules + client-scoped learned memory + similarity + optional per-client ML, with a group-first Review workspace."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

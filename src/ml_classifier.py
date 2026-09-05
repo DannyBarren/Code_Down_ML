@@ -261,20 +261,40 @@ class SetFitModel:
 # --------------------------------------------------------------------------- #
 
 
+def safe_client_id(client_id: Optional[str]) -> str:
+    """Slugify a client/project name into a path-safe directory id.
+
+    Lowercase alphanumerics, everything else collapsed to ``_``. No path
+    separators, ever. Two different names may slug to the same id — that is
+    acceptable (they then share a model store) and never unsafe.
+    """
+    import re as _re
+
+    slug = _re.sub(r"[^a-z0-9]+", "_", str(client_id or "").strip().lower())
+    return slug.strip("_") or "client"
+
+
 class ModelManager:
     """Trains, versions, selects and serves the trainable models.
 
-    All public methods are safe: prediction returns "no prediction" rather than
-    raising when no model is trained, so the engine can always fall back to
-    similarity.
+    Scoping: with ``client_id=None`` (default) the manager is **global** — it
+    trains on all training data and stores under ``data/models/``. With a
+    client id it trains on that client's examples plus the shared pool and
+    stores under ``data/models/clients/<safe_id>/``. All public methods are
+    safe: prediction returns "no prediction" rather than raising when no model
+    is trained, so the engine can always fall back to similarity.
     """
 
     MODEL_TYPES = ("logreg", "setfit")
 
-    def __init__(self, config: Config, storage: Storage):
+    def __init__(self, config: Config, storage: Storage,
+                 client_id: Optional[str] = None):
         self.config = config
         self.storage = storage
-        self.dir = config.abs_model_store_dir()
+        self.client_id = client_id or None
+        base = config.abs_model_store_dir()
+        self.dir = (base / "clients" / safe_client_id(self.client_id)
+                    if self.client_id else base)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.registry_path = self.dir / "registry.json"
         self._cache: Dict[str, Tuple[int, object]] = {}
@@ -293,7 +313,8 @@ class ModelManager:
 
     # ----------------------------------------------------------- info
     def training_count(self) -> int:
-        return self.storage.count_training_data()
+        """Labelled examples in this manager's scope (client + shared pool)."""
+        return self.storage.count_training_data(client_id=self.client_id)
 
     def available_model_types(self) -> Dict[str, bool]:
         return {"logreg": LogRegModel.is_available(),
@@ -304,7 +325,7 @@ class ModelManager:
 
     def can_train(self) -> Tuple[bool, str]:
         n = self.training_count()
-        n_labels = len(self.storage.distinct_labels())
+        n_labels = len(self.storage.distinct_labels(client_id=self.client_id))
         if n < self.config.ml.min_examples_to_train:
             return False, (f"Need at least {self.config.ml.min_examples_to_train} "
                            f"approved examples (have {n}).")
@@ -365,7 +386,9 @@ class ModelManager:
                 progress_cb(msg)
 
         wanted = set(model_types) if model_types else set(self.MODEL_TYPES)
-        texts, labels = self.storage.get_training_xy()
+        # Client-scoped managers train on that client's examples plus the
+        # shared pool; the global manager trains on everything (unchanged).
+        texts, labels = self.storage.get_training_xy(client_id=self.client_id)
         ml = self.config.ml
         results: Dict[str, Dict] = {}
         reg = self._load_registry()
