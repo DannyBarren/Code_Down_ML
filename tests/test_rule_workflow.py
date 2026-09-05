@@ -334,19 +334,20 @@ def test_protected_row_reports_matched_rule(rules):
 
 
 def test_chrysalis_exact_rules_scenario(config, rules, storage):
-    """Reproduce the client's exact rules on the real file (skips if absent).
+    """Reproduce the client's exact rules on a sanitized fixture.
 
-    All rows containing the phrases are already coded, so nothing is filled —
-    but the rules must be shown to *match* those protected rows, and appended
-    blank rows with the same phrases must fill correctly.
+    ``tests/fixtures/chrysalis_like.csv`` is synthetic (fictional vendors) but
+    keeps the real file's invariants: 187 pre-filled rows, and enough Cook
+    Multimedia / Rent Signage rows that the rules provably fire on protected
+    rows. All rows containing the phrases are already coded, so nothing is
+    filled — but the rules must be shown to *match* those protected rows, and
+    appended blank rows with the same phrases must fill correctly.
     """
-    csv = (Path(__file__).resolve().parent.parent /
-           "DEVELOPMENT ONLY_ The Chrysalis Group Transaction Detail - "
-           "Transaction Detail.csv")
+    csv = (Path(__file__).resolve().parent / "fixtures" / "chrysalis_like.csv")
     if not csv.exists():
-        pytest.skip("Chrysalis client CSV not present in this checkout.")
+        pytest.skip("sanitized chrysalis_like fixture missing from checkout.")
 
-    loaded = load_dataframe(str(csv), config, source_name="chrysalis.csv")
+    loaded = load_dataframe(str(csv), config, source_name="chrysalis_like.csv")
     # Append blank rows that resemble future transactions.
     loaded.df = pd.concat([loaded.df, pd.DataFrame([
         {"Name": "Cook Multimedia", "Memo/Description": "video",
@@ -547,13 +548,11 @@ def test_reviewed_ingest_uses_user_phrases(make_loaded, rules, storage, config):
 
 def test_chrysalis_row_wide_rules_fill_future_rows(config, rules, storage):
     """Row-wide rules (no field selection) code the appended future rows."""
-    csv = (Path(__file__).resolve().parent.parent /
-           "DEVELOPMENT ONLY_ The Chrysalis Group Transaction Detail - "
-           "Transaction Detail.csv")
+    csv = (Path(__file__).resolve().parent / "fixtures" / "chrysalis_like.csv")
     if not csv.exists():
-        pytest.skip("Chrysalis client CSV not present in this checkout.")
+        pytest.skip("sanitized chrysalis_like fixture missing from checkout.")
 
-    loaded = load_dataframe(str(csv), config, source_name="chrysalis.csv")
+    loaded = load_dataframe(str(csv), config, source_name="chrysalis_like.csv")
     loaded.df = pd.concat([loaded.df, pd.DataFrame([
         {"Name": "Cook Multimedia", "Memo/Description": "video",
          "New Account": ""},

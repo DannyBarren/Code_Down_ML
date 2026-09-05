@@ -107,7 +107,10 @@ streamlit run main.py
 ```
 
 Open <http://localhost:8501>. On the dashboard, click **Load sample dataset**
-(neutral, fictional vendors), then **Full Intelligent Run** in the toolbar.
+(neutral, fictional vendors), then **Run Rules — Strict ★ (recommended)** in
+the toolbar for a deterministic, fully audited first pass. Rows no rule covers
+can then be picked up with **Full Intelligent Run** and finished in the
+**Review** workspace.
 
 `python main.py` also works — it relaunches itself under Streamlit. If core
 packages are missing, the app shows a setup screen with a one-click installer

@@ -95,6 +95,28 @@ left blank and sent to the review queue.
   held-out accuracy, and resolves `auto` mode from the number of approved
   examples (`hybrid_min` / `ml_primary_min`). Prediction never raises — no
   model means "no prediction", and the engine falls back to similarity.
+
+#### Model storage after 1.1
+
+Models are scoped per client, with the global store as the fallback:
+
+```
+data/models/registry.json                 # global registry
+data/models/logreg/vN.joblib              # global LogReg versions
+data/models/setfit/vN/                    # global SetFit versions
+data/models/clients/<client_id>/registry.json
+data/models/clients/<client_id>/logreg/vN.joblib
+data/models/clients/<client_id>/setfit/vN/
+```
+
+`<client_id>` is a slugified client/project name (no path separators).
+Training a client manager reads only that client's `training_data` plus the
+shared pool; training the global manager reads everything (unchanged).
+Prediction order when a client is active: **client model** (used when it
+returns a label with confidence ≥ `confidence.review_cutoff`) → **global
+model** (same cutoff) → **similarity** (the existing engine fallback). A
+missing, untrained or corrupt model simply yields "no prediction" — nothing
+ever raises. When no client is selected, only the global model is consulted.
 - **`review_queue.py`** — builds the editable review table from flagged results
   (`FILLED_REVIEW`, `NEEDS_REVIEW`), sorted least-confident first, and applies
   the user's approvals back onto the working dataframe through the single

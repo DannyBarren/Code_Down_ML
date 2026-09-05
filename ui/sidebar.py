@@ -92,8 +92,11 @@ def render_sidebar() -> None:
             help=("Matches on meaning rather than spelling." if available else
                   "Optional engine not installed — the TF-IDF matcher is used."))
 
-        n_examples = mm.training_count()
-        learning_on = config.ml.enabled and mm.has_model()
+        from ui import common as _common
+        scoped_mm = _common.model_manager_for(_common.current_client_id())
+        n_examples = scoped_mm.training_count()
+        learning_on = config.ml.enabled and (mm.has_model()
+                                             or scoped_mm.has_model())
         st.caption(f"Learning: {'on' if learning_on else 'warming up'} · "
                    f"{n_examples} examples")
         st.divider()

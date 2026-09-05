@@ -497,7 +497,8 @@ def _engine_status_text() -> str:
     sf_ok, _ = setfit_available()
     matching = ("semantic AI" if (sem_ok and config.similarity.use_embeddings)
                 else "TF-IDF")
-    if mm.has_model():
+    scoped_mm = common.model_manager_for(common.current_client_id())
+    if mm.has_model() or scoped_mm.has_model():
         ml = "SetFit + LogReg" if sf_ok else "LogReg"
     else:
         ml = "not trained — using rules + similarity"

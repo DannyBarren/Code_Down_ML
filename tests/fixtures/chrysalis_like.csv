@@ -1,0 +1,188 @@
+Date,Name,Memo/Description,Amount,New Account
+2026-01-01,Cook Multimedia,video production package 1,532.36,6622
+2026-02-02,Cook Multimedia,video production package 2,249.75,6622
+2026-03-03,Cook Multimedia,video production package 3,648.03,6622
+2026-04-04,Cook Multimedia,video production package 4,466.23,6622
+2026-05-05,Cook Multimedia,video production package 5,808.65,6622
+2026-06-06,Cook Multimedia,video production package 6,102.82,6622
+2026-01-07,Cook Multimedia,video production package 7,662.75,6622
+2026-02-08,Cook Multimedia,video production package 8,212.21,6622
+2026-03-09,Harbor Sign Co 1,Rent Signage banner install 1,274.61,6622
+2026-04-10,Harbor Sign Co 2,Rent Signage banner install 2,830.04,6622
+2026-05-11,Harbor Sign Co 3,Rent Signage banner install 3,122.15,6622
+2026-06-12,Harbor Sign Co 4,Rent Signage banner install 4,511.43,6622
+2026-01-13,Harbor Sign Co 5,Rent Signage banner install 5,43.59,6622
+2026-02-14,Harbor Sign Co 6,Rent Signage banner install 6,14.24,6622
+2026-03-15,Harbor Sign Co 7,Rent Signage banner install 7,816.84,6622
+2026-04-16,Harbor Sign Co 8,Rent Signage banner install 8,203.26,6622
+2026-05-17,Zephyr Multimedia Studio 1,promo reel 1,621.53,6622
+2026-06-18,Zephyr Multimedia Studio 2,promo reel 2,155.75,6622
+2026-01-19,Zephyr Multimedia Studio 3,promo reel 3,890.71,6622
+2026-02-20,Zephyr Multimedia Studio 4,promo reel 4,580.48,6622
+2026-03-21,Bluebird Landscaping 2,weekly lawn service #20,762.34,6300
+2026-04-22,Northgate Office Supply 2,printer paper case #21,838.74,6200
+2026-05-23,Cloud Nine Hosting 2,monthly hosting plan #22,524.57,6100
+2026-06-24,Pioneer Pest Control 2,quarterly treatment #23,95.79,6320
+2026-01-25,Summit Cleaning Crew 2,janitorial visit #24,361.70,6310
+2026-02-26,Willow Tree Plumbing 2,repair call #25,565.91,6330
+2026-03-27,Golden Gate Electric 2,lighting repair #26,657.35,6335
+2026-04-01,Redwood Waste Services 2,monthly pickup #27,601.88,6340
+2026-05-02,Silverline Security 2,alarm monitoring #28,119.04,6345
+2026-06-03,Maple Leaf Insurance 2,monthly premium #29,533.05,6350
+2026-01-04,Cedar Rapids Water 2,utility bill #30,512.95,6360
+2026-02-05,Birchwood Internet 2,fiber service #31,51.90,6105
+2026-03-06,Falcon Courier 2,package delivery #32,355.55,6370
+2026-04-07,Riverstone Legal 2,document review #33,652.91,6380
+2026-05-08,Sunrise Accounting 2,bookkeeping retainer #34,170.80,6385
+2026-06-09,Aspen Snow Removal 2,lot clearing #35,188.95,6390
+2026-01-10,Copperfield HVAC 2,filter replacement #36,503.80,6395
+2026-02-11,Daisy Flower Market 2,lobby arrangement #37,250.10,6410
+2026-03-12,Everest Elevator Service 2,inspection #38,502.07,6415
+2026-04-13,Foxglove Painting 2,touch up work #39,466.60,6420
+2026-05-14,Bluebird Landscaping 3,weekly lawn service #40,67.62,6300
+2026-06-15,Northgate Office Supply 3,printer paper case #41,213.73,6200
+2026-01-16,Cloud Nine Hosting 3,monthly hosting plan #42,785.56,6100
+2026-02-17,Pioneer Pest Control 3,quarterly treatment #43,697.91,6320
+2026-03-18,Summit Cleaning Crew 3,janitorial visit #44,778.86,6310
+2026-04-19,Willow Tree Plumbing 3,repair call #45,670.81,6330
+2026-05-20,Golden Gate Electric 3,lighting repair #46,662.96,6335
+2026-06-21,Redwood Waste Services 3,monthly pickup #47,362.70,6340
+2026-01-22,Silverline Security 3,alarm monitoring #48,41.43,6345
+2026-02-23,Maple Leaf Insurance 3,monthly premium #49,93.36,6350
+2026-03-24,Cedar Rapids Water 3,utility bill #50,584.70,6360
+2026-04-25,Birchwood Internet 3,fiber service #51,636.10,6105
+2026-05-26,Falcon Courier 3,package delivery #52,191.47,6370
+2026-06-27,Riverstone Legal 3,document review #53,737.44,6380
+2026-01-01,Sunrise Accounting 3,bookkeeping retainer #54,883.87,6385
+2026-02-02,Aspen Snow Removal 3,lot clearing #55,258.82,6390
+2026-03-03,Copperfield HVAC 3,filter replacement #56,152.23,6395
+2026-04-04,Daisy Flower Market 3,lobby arrangement #57,756.77,6410
+2026-05-05,Everest Elevator Service 3,inspection #58,898.19,6415
+2026-06-06,Foxglove Painting 3,touch up work #59,758.21,6420
+2026-01-07,Bluebird Landscaping 4,weekly lawn service #60,748.99,6300
+2026-02-08,Northgate Office Supply 4,printer paper case #61,361.10,6200
+2026-03-09,Cloud Nine Hosting 4,monthly hosting plan #62,33.17,6100
+2026-04-10,Pioneer Pest Control 4,quarterly treatment #63,746.73,6320
+2026-05-11,Summit Cleaning Crew 4,janitorial visit #64,503.35,6310
+2026-06-12,Willow Tree Plumbing 4,repair call #65,868.32,6330
+2026-01-13,Golden Gate Electric 4,lighting repair #66,867.66,6335
+2026-02-14,Redwood Waste Services 4,monthly pickup #67,712.16,6340
+2026-03-15,Silverline Security 4,alarm monitoring #68,348.00,6345
+2026-04-16,Maple Leaf Insurance 4,monthly premium #69,90.57,6350
+2026-05-17,Cedar Rapids Water 4,utility bill #70,604.02,6360
+2026-06-18,Birchwood Internet 4,fiber service #71,423.17,6105
+2026-01-19,Falcon Courier 4,package delivery #72,584.64,6370
+2026-02-20,Riverstone Legal 4,document review #73,267.65,6380
+2026-03-21,Sunrise Accounting 4,bookkeeping retainer #74,597.61,6385
+2026-04-22,Aspen Snow Removal 4,lot clearing #75,371.04,6390
+2026-05-23,Copperfield HVAC 4,filter replacement #76,845.24,6395
+2026-06-24,Daisy Flower Market 4,lobby arrangement #77,884.23,6410
+2026-01-25,Everest Elevator Service 4,inspection #78,576.19,6415
+2026-02-26,Foxglove Painting 4,touch up work #79,384.67,6420
+2026-03-27,Bluebird Landscaping 5,weekly lawn service #80,494.10,6300
+2026-04-01,Northgate Office Supply 5,printer paper case #81,752.66,6200
+2026-05-02,Cloud Nine Hosting 5,monthly hosting plan #82,191.82,6100
+2026-06-03,Pioneer Pest Control 5,quarterly treatment #83,107.85,6320
+2026-01-04,Summit Cleaning Crew 5,janitorial visit #84,772.59,6310
+2026-02-05,Willow Tree Plumbing 5,repair call #85,55.15,6330
+2026-03-06,Golden Gate Electric 5,lighting repair #86,738.01,6335
+2026-04-07,Redwood Waste Services 5,monthly pickup #87,260.52,6340
+2026-05-08,Silverline Security 5,alarm monitoring #88,861.50,6345
+2026-06-09,Maple Leaf Insurance 5,monthly premium #89,117.92,6350
+2026-01-10,Cedar Rapids Water 5,utility bill #90,583.11,6360
+2026-02-11,Birchwood Internet 5,fiber service #91,775.84,6105
+2026-03-12,Falcon Courier 5,package delivery #92,274.81,6370
+2026-04-13,Riverstone Legal 5,document review #93,471.27,6380
+2026-05-14,Sunrise Accounting 5,bookkeeping retainer #94,234.98,6385
+2026-06-15,Aspen Snow Removal 5,lot clearing #95,838.67,6390
+2026-01-16,Copperfield HVAC 5,filter replacement #96,780.69,6395
+2026-02-17,Daisy Flower Market 5,lobby arrangement #97,261.87,6410
+2026-03-18,Everest Elevator Service 5,inspection #98,565.68,6415
+2026-04-19,Foxglove Painting 5,touch up work #99,735.87,6420
+2026-05-20,Bluebird Landscaping 6,weekly lawn service #100,492.05,6300
+2026-06-21,Northgate Office Supply 6,printer paper case #101,491.39,6200
+2026-01-22,Cloud Nine Hosting 6,monthly hosting plan #102,861.59,6100
+2026-02-23,Pioneer Pest Control 6,quarterly treatment #103,619.14,6320
+2026-03-24,Summit Cleaning Crew 6,janitorial visit #104,249.49,6310
+2026-04-25,Willow Tree Plumbing 6,repair call #105,262.81,6330
+2026-05-26,Golden Gate Electric 6,lighting repair #106,218.41,6335
+2026-06-27,Redwood Waste Services 6,monthly pickup #107,899.78,6340
+2026-01-01,Silverline Security 6,alarm monitoring #108,206.92,6345
+2026-02-02,Maple Leaf Insurance 6,monthly premium #109,479.10,6350
+2026-03-03,Cedar Rapids Water 6,utility bill #110,691.80,6360
+2026-04-04,Birchwood Internet 6,fiber service #111,30.99,6105
+2026-05-05,Falcon Courier 6,package delivery #112,409.02,6370
+2026-06-06,Riverstone Legal 6,document review #113,94.32,6380
+2026-01-07,Sunrise Accounting 6,bookkeeping retainer #114,161.49,6385
+2026-02-08,Aspen Snow Removal 6,lot clearing #115,873.28,6390
+2026-03-09,Copperfield HVAC 6,filter replacement #116,65.21,6395
+2026-04-10,Daisy Flower Market 6,lobby arrangement #117,125.92,6410
+2026-05-11,Everest Elevator Service 6,inspection #118,476.37,6415
+2026-06-12,Foxglove Painting 6,touch up work #119,557.37,6420
+2026-01-13,Bluebird Landscaping 7,weekly lawn service #120,829.03,6300
+2026-02-14,Northgate Office Supply 7,printer paper case #121,599.67,6200
+2026-03-15,Cloud Nine Hosting 7,monthly hosting plan #122,18.04,6100
+2026-04-16,Pioneer Pest Control 7,quarterly treatment #123,106.95,6320
+2026-05-17,Summit Cleaning Crew 7,janitorial visit #124,895.32,6310
+2026-06-18,Willow Tree Plumbing 7,repair call #125,35.74,6330
+2026-01-19,Golden Gate Electric 7,lighting repair #126,543.24,6335
+2026-02-20,Redwood Waste Services 7,monthly pickup #127,604.71,6340
+2026-03-21,Silverline Security 7,alarm monitoring #128,798.37,6345
+2026-04-22,Maple Leaf Insurance 7,monthly premium #129,394.07,6350
+2026-05-23,Cedar Rapids Water 7,utility bill #130,363.13,6360
+2026-06-24,Birchwood Internet 7,fiber service #131,98.53,6105
+2026-01-25,Falcon Courier 7,package delivery #132,818.96,6370
+2026-02-26,Riverstone Legal 7,document review #133,523.92,6380
+2026-03-27,Sunrise Accounting 7,bookkeeping retainer #134,512.24,6385
+2026-04-01,Aspen Snow Removal 7,lot clearing #135,771.63,6390
+2026-05-02,Copperfield HVAC 7,filter replacement #136,117.71,6395
+2026-06-03,Daisy Flower Market 7,lobby arrangement #137,355.33,6410
+2026-01-04,Everest Elevator Service 7,inspection #138,517.53,6415
+2026-02-05,Foxglove Painting 7,touch up work #139,139.11,6420
+2026-03-06,Bluebird Landscaping 8,weekly lawn service #140,444.06,6300
+2026-04-07,Northgate Office Supply 8,printer paper case #141,665.00,6200
+2026-05-08,Cloud Nine Hosting 8,monthly hosting plan #142,391.03,6100
+2026-06-09,Pioneer Pest Control 8,quarterly treatment #143,390.99,6320
+2026-01-10,Summit Cleaning Crew 8,janitorial visit #144,467.98,6310
+2026-02-11,Willow Tree Plumbing 8,repair call #145,704.40,6330
+2026-03-12,Golden Gate Electric 8,lighting repair #146,215.54,6335
+2026-04-13,Redwood Waste Services 8,monthly pickup #147,35.33,6340
+2026-05-14,Silverline Security 8,alarm monitoring #148,145.89,6345
+2026-06-15,Maple Leaf Insurance 8,monthly premium #149,344.57,6350
+2026-01-16,Cedar Rapids Water 8,utility bill #150,167.83,6360
+2026-02-17,Birchwood Internet 8,fiber service #151,455.58,6105
+2026-03-18,Falcon Courier 8,package delivery #152,275.33,6370
+2026-04-19,Riverstone Legal 8,document review #153,518.35,6380
+2026-05-20,Sunrise Accounting 8,bookkeeping retainer #154,577.11,6385
+2026-06-21,Aspen Snow Removal 8,lot clearing #155,443.95,6390
+2026-01-22,Copperfield HVAC 8,filter replacement #156,90.27,6395
+2026-02-23,Daisy Flower Market 8,lobby arrangement #157,617.84,6410
+2026-03-24,Everest Elevator Service 8,inspection #158,44.60,6415
+2026-04-25,Foxglove Painting 8,touch up work #159,804.17,6420
+2026-05-26,Bluebird Landscaping 9,weekly lawn service #160,289.69,6300
+2026-06-27,Northgate Office Supply 9,printer paper case #161,698.74,6200
+2026-01-01,Cloud Nine Hosting 9,monthly hosting plan #162,439.72,6100
+2026-02-02,Pioneer Pest Control 9,quarterly treatment #163,89.42,6320
+2026-03-03,Summit Cleaning Crew 9,janitorial visit #164,893.24,6310
+2026-04-04,Willow Tree Plumbing 9,repair call #165,609.81,6330
+2026-05-05,Golden Gate Electric 9,lighting repair #166,713.20,6335
+2026-06-06,Redwood Waste Services 9,monthly pickup #167,28.11,6340
+2026-01-07,Silverline Security 9,alarm monitoring #168,695.84,6345
+2026-02-08,Maple Leaf Insurance 9,monthly premium #169,513.17,6350
+2026-03-09,Cedar Rapids Water 9,utility bill #170,438.59,6360
+2026-04-10,Birchwood Internet 9,fiber service #171,485.57,6105
+2026-05-11,Falcon Courier 9,package delivery #172,633.03,6370
+2026-06-12,Riverstone Legal 9,document review #173,499.77,6380
+2026-01-13,Sunrise Accounting 9,bookkeeping retainer #174,134.40,6385
+2026-02-14,Aspen Snow Removal 9,lot clearing #175,518.67,6390
+2026-03-15,Copperfield HVAC 9,filter replacement #176,685.24,6395
+2026-04-16,Daisy Flower Market 9,lobby arrangement #177,298.28,6410
+2026-05-17,Everest Elevator Service 9,inspection #178,551.90,6415
+2026-06-18,Foxglove Painting 9,touch up work #179,784.20,6420
+2026-01-19,Bluebird Landscaping 10,weekly lawn service #180,295.39,6300
+2026-02-20,Northgate Office Supply 10,printer paper case #181,457.21,6200
+2026-03-21,Cloud Nine Hosting 10,monthly hosting plan #182,647.56,6100
+2026-04-22,Pioneer Pest Control 10,quarterly treatment #183,327.89,6320
+2026-05-23,Summit Cleaning Crew 10,janitorial visit #184,602.54,6310
+2026-06-24,Willow Tree Plumbing 10,repair call #185,421.81,6330
+2026-01-25,Golden Gate Electric 10,lighting repair #186,535.40,6335

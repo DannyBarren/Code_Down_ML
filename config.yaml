@@ -7,7 +7,7 @@
 
 app:
   name: "ProfitCoach"
-  version: "1.0.0"
+  version: "1.1.0"
 
 # ---------------------------------------------------------------------------
 # Semantic similarity / embedding model (the reliable foundation engine)
