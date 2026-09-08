@@ -33,6 +33,10 @@ class Storage:
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        # WAL + busy_timeout so Streamlit reruns don't lock each other on a
+        # volume. Backward compatible for local / tests (WAL is fine locally).
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._init_schema()
 
     # --------------------------------------------------------------- schema
