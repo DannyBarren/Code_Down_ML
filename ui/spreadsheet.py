@@ -177,7 +177,7 @@ def _do_start_fresh_live() -> None:
     Does not touch SQLite rules, mappings, training, or models.
     """
     typed = (st.session_state.get("fresh_confirm_name") or "").strip()
-    client = (st.session_state.get("client_name") or "").strip()
+    client = (common.current_client_id() or "").strip()
     st.session_state["confirm_action"] = None
     if not client or typed != client:
         common.set_flash("Start fresh cancelled — client name did not match.")
@@ -199,7 +199,7 @@ def _do_unload_file() -> None:
 def _do_unload_and_delete_session() -> None:
     """Clear session state and delete this client's session folder only."""
     st.session_state["confirm_action"] = None
-    client = (st.session_state.get("client_name") or "").strip()
+    client = (common.current_client_id() or "").strip()
     if client:
         common.delete_live_session(client)
     common.reset_file_session()
@@ -1206,11 +1206,17 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
         st.rerun()
 
     if actions.get("save_workspace"):
-        if common.persist_workspace():
+        name = common.remember_client_name() or (common.current_client_id() or "")
+        if not name:
+            common.set_flash(
+                "Set a client name on the dashboard before saving.")
+        elif st.session_state.get("work_df") is None \
+                or st.session_state.get("original_bytes") is None:
+            common.set_flash("Load a file before saving the workspace.")
+        elif common.persist_workspace():
             common.set_flash("Workspace saved to this server's persistent volume.")
         else:
-            common.set_flash(
-                "Nothing to save — set a client name and load a file first.")
+            common.set_flash("Could not save the workspace to the volume.")
         st.rerun()
 
 
