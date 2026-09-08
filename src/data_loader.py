@@ -59,6 +59,8 @@ class LoadedData:
     text_columns: List[str] = field(default_factory=list)
     column_map: Dict[str, str] = field(default_factory=dict)
     original_columns: List[str] = field(default_factory=list)
+    # Which known export shape the file matched (``""`` = generic export).
+    source_profile: str = ""
 
     @property
     def seed_count(self) -> int:
@@ -130,8 +132,19 @@ def load_dataframe(
         lambda v: normalize_code(v) if _has_value(v) else ""
     )
 
+    # Recognize known export shapes (AppFolio / QuickBooks) so their headers
+    # feed similarity text without the user renaming anything. Detection never
+    # fails a load — no winner means the generic resolver runs as before.
+    from src.ingest_profiles import detect_profile, profile_similarity_candidates
+    profile = detect_profile(original_columns)
+    profile_key = profile.key if profile else ""
+    if profile:
+        logger.info("source_profile_detected", profile=profile.key,
+                    file=resolved_name)
+
     # Determine which columns feed the similarity text.
-    sim_cols = _select_text_columns(df, config, original_columns, na_col)
+    sim_cols = _select_text_columns(df, config, original_columns, na_col,
+                                    profile=profile)
     if not sim_cols:
         raise DataLoadError(
             "Could not find any text columns to compare transactions. "
@@ -155,6 +168,7 @@ def load_dataframe(
         text_columns=sim_cols,
         column_map=column_map,
         original_columns=original_columns,
+        source_profile=profile_key,
     )
 
 
@@ -163,10 +177,21 @@ def _select_text_columns(
     config: Config,
     original_columns: List[str],
     na_col: str,
+    profile=None,
 ) -> List[str]:
-    """Pick the columns used to build similarity text, with sensible fallbacks."""
-    sim_cols = [_resolve_column([c], original_columns)
-                for c in config.similarity_columns_effective()]
+    """Pick the columns used to build similarity text, with sensible fallbacks.
+
+    When a source profile won detection, its aliases are tried *first* (so e.g.
+    a QuickBooks ``Payee`` column feeds the vendor signal even though the
+    generic config list only names ``Name``), then the configured columns.
+    """
+    candidates: List[str] = []
+    if profile is not None:
+        from src.ingest_profiles import profile_similarity_candidates
+        candidates.extend(profile_similarity_candidates(profile))
+    candidates.extend(config.similarity_columns_effective())
+
+    sim_cols = [_resolve_column([c], original_columns) for c in candidates]
     sim_cols = [c for c in sim_cols if c]
     if not sim_cols:
         sim_cols = [_resolve_column([c], original_columns)

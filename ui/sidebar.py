@@ -48,6 +48,8 @@ def render_sidebar() -> None:
         _nav_button("Spreadsheet", "spreadsheet",
                     key="nav_sheet", disabled=not has_data)
         _nav_button("Review", "review", key="nav_review", disabled=not has_data)
+        _nav_button("Insights", "insights", key="nav_insights",
+                    disabled=not has_data)
         _nav_button("New file", "landing", key="nav_landing")
 
         st.markdown("#### Manage")

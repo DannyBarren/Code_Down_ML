@@ -36,6 +36,7 @@ from src.data_loader import (
     SIM_TEXT_COL,
     LoadedData,
     _has_value,
+    build_base_signature,
     recompute_sim_text,
 )
 from src.fill_down_engine import EngineResult, FillDownEngine
@@ -1738,6 +1739,140 @@ def recode_rows(work_df: pd.DataFrame, loaded: LoadedData, storage: Storage,
                                   engine_used="recode", client_id=client_id)
             learned += 1
     return {"recoded": recoded, "learned": learned, "skipped_protected": skipped}
+
+
+# --------------------------------------------------------------------------- #
+# Multi-file append (throughout-the-month ingest)
+# --------------------------------------------------------------------------- #
+def _resolve_first_column(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+    """First candidate header present in ``df`` (case/space tolerant)."""
+    norm = {str(c).strip().lower(): c for c in df.columns}
+    for cand in candidates:
+        hit = norm.get(str(cand).strip().lower())
+        if hit is not None:
+            return hit
+    return None
+
+
+def _dedupe_keys(df: pd.DataFrame, text_columns: List[str], config: Config,
+                 date_col: Optional[str], amount_col: Optional[str]) -> List[str]:
+    """Stable per-row dedupe keys: base signature + date + amount when present."""
+    base = (df[BASE_SIG_COL].astype(str).tolist() if BASE_SIG_COL in df.columns
+            else build_base_signature(df, text_columns, config).tolist())
+    dates = (df[date_col].astype(str).str.strip().tolist()
+             if date_col and date_col in df.columns else [""] * len(df))
+    amounts = (df[amount_col].astype(str).str.strip().tolist()
+               if amount_col and amount_col in df.columns else [""] * len(df))
+    return [f"{b}||{d}||{a}" for b, d, a in zip(base, dates, amounts)]
+
+
+def append_export(work_df: pd.DataFrame, loaded: LoadedData,
+                  new_raw: bytes, new_name: str, config: Config,
+                  storage: Storage) -> Tuple[pd.DataFrame, Dict[str, int]]:
+    """Append rows from another export onto the working dataframe.
+
+    Throughout-the-month ingest: the accountant drops next week's export onto
+    the current book. Rows already present (stable signature: base text + date
+    + amount when those columns exist on both sides) are **not** duplicated,
+    and an existing row's ``New Account`` is never overwritten — coded rows
+    stay coded, blank rows stay as they are. Genuinely new rows arrive with
+    their uploaded code (a protected seed) or blank.
+
+    Returns ``(new_work_df, audit)`` with ``added`` / ``skipped`` (duplicates)
+    / ``protected`` (already-coded existing rows left untouched).
+    """
+    from src.data_loader import load_dataframe
+
+    new_loaded = load_dataframe(new_raw, config, source_name=new_name)
+    new_df = new_loaded.df.copy()
+
+    na_col = loaded.new_account_col
+    text_cols = [c for c in loaded.text_columns if c in work_df.columns]
+
+    # Date/amount columns, resolved tolerantly on both sides.
+    date_candidates = list(config.columns.date) + ["Txn Date", "Posting Date"]
+    amount_candidates = list(config.columns.amount) + ["Total"]
+    date_col_old = _resolve_first_column(work_df, date_candidates)
+    date_col_new = _resolve_first_column(new_df, date_candidates)
+    amount_col_old = _resolve_first_column(work_df, amount_candidates)
+    amount_col_new = _resolve_first_column(new_df, amount_candidates)
+    # Both sides must have the column for it to join the dedupe key.
+    date_key = date_col_old if date_col_old and date_col_new else None
+    amount_key = amount_col_old if amount_col_old and amount_col_new else None
+
+    recompute_sim_text(work_df, loaded.text_columns, config)
+    old_keys = _dedupe_keys(work_df, text_cols, config,
+                            date_col_old if date_key else None,
+                            amount_col_old if amount_key else None)
+    old_coded = work_df[na_col].astype(str).str.strip() != ""
+    key_is_coded = dict(zip(old_keys, old_coded.tolist()))
+    existing_keys = set(old_keys)
+
+    # New rows get their base signature for keying (no notes on a fresh file).
+    new_text_cols = ([c for c in text_cols if c in new_df.columns]
+                     or list(new_loaded.text_columns))
+    new_keys_source = new_df.copy()
+    new_keys_source[BASE_SIG_COL] = build_base_signature(
+        new_df, new_text_cols, config)
+    new_keys = _dedupe_keys(new_keys_source, new_text_cols, config,
+                            date_col_new if date_key else None,
+                            amount_col_new if amount_key else None)
+
+    keep_rows: List[int] = []
+    skipped = 0
+    protected = 0
+    for pos, key in enumerate(new_keys):
+        if key in existing_keys:
+            skipped += 1
+            # A duplicate whose existing row is already coded was protected —
+            # its New Account was left exactly as it was.
+            if key_is_coded.get(key):
+                protected += 1
+            continue
+        keep_rows.append(pos)
+        existing_keys.add(key)
+
+    if not keep_rows:
+        return work_df, {"added": 0, "skipped": skipped,
+                         "protected": protected}
+
+    addition = new_df.iloc[keep_rows].copy()
+    addition[na_col] = addition[na_col].apply(
+        lambda v: normalize_code(v) if _has_value(v) else "")
+    if RULE_NOTES_COL not in addition.columns:
+        addition[RULE_NOTES_COL] = ""
+
+    # Union of columns: new client columns appear on old rows as blank.
+    for col in addition.columns:
+        if col not in work_df.columns and not str(col).startswith("_"):
+            work_df[col] = ""
+    combined = pd.concat([work_df, addition], ignore_index=True)
+
+    # Rebuild meta for the appended rows; re-attach any saved Rule Notes.
+    ensure_state_columns(combined)
+    # Concat leaves NaN in meta columns on appended rows — fill the defaults.
+    combined[SELECT_COL] = combined[SELECT_COL].fillna(False).astype(bool)
+    combined[CONF_COL] = combined[CONF_COL].fillna(0.0)
+    for col in (ENGINE_COL, ACTION_COL, WHY_COL, SUGGESTED_COL, GROUP_COL,
+                RULE_NOTES_COL):
+        combined[col] = combined[col].fillna("")
+    _seed_saved_notes(combined, loaded, storage, config)
+    recompute_sim_text(combined, loaded.text_columns, config)
+    seed_mask = (combined[na_col].astype(str).str.strip() != "") & \
+        (combined[ENGINE_COL].astype(str).str.strip() == "")
+    combined.loc[seed_mask, ACTION_COL] = FillAction.KEPT_SEED.value
+    combined.loc[seed_mask, CONF_COL] = 1.0
+    combined.loc[seed_mask, ENGINE_COL] = "seed"
+
+    # The loaded metadata now covers the union of columns.
+    for col in combined.columns:
+        if str(col).startswith("_") or col in (na_col, RULE_NOTES_COL):
+            continue
+        if col not in loaded.original_columns:
+            loaded.original_columns.append(col)
+
+    return combined, {"added": len(keep_rows), "skipped": skipped,
+                      "protected": protected}
 
 
 # --------------------------------------------------------------------------- #
