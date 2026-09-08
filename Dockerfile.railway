@@ -1,0 +1,41 @@
+# =============================================================================
+# Code_Down_ML — Railway live client instance
+#
+# Password-gated, volume-backed Streamlit app. Core TF-IDF + LogReg only
+# (no torch / sentence-transformers / SetFit). The Hugging Face public-demo
+# image is the other Dockerfile — do not conflate the two.
+# =============================================================================
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    FILLDOWN_LIVE=1 \
+    FILLDOWN_DEMO=0 \
+    FILLDOWN_DEMO_RESET=0 \
+    FILLDOWN_DATA_DIR=/data \
+    FILLDOWN_MAX_ROWS=50000
+
+WORKDIR /app
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# Railway volumes mount as root. Run as root (no USER 1000) so /data is
+# writable; also set RAILWAY_RUN_UID=0 on the service (see docs/RAILWAY.md).
+RUN mkdir -p /data && chmod 777 /data
+
+EXPOSE 8501
+
+# Shell-form CMD so Railway's $PORT expands. Do not bake STREAMLIT_SERVER_PORT.
+CMD streamlit run main.py \
+  --server.address=0.0.0.0 \
+  --server.port=${PORT:-8501} \
+  --server.headless=true \
+  --server.fileWatcherType=none \
+  --server.enableXsrfProtection=true \
+  --server.websocketPingInterval=25 \
+  --browser.gatherUsageStats=false

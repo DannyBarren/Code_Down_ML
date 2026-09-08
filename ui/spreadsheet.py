@@ -126,6 +126,7 @@ def _do_clear_spreadsheet() -> None:
     common.push_undo()
     n = sh.clear_spreadsheet_values(work, loaded, config)
     _bump()
+    common.persist_workspace()
     common.set_flash(f"Cleared Target Account and Rule Notes on {n:,} row(s).")
 
 
@@ -147,13 +148,20 @@ def _do_reset_run() -> None:
     st.session_state.pop("last_rule_audit", None)
     st.session_state.pop("last_result", None)
     _bump()
+    common.persist_workspace()
     common.set_flash(
         f"Reset the run — cleared {n:,} auto-filled row(s). Your rules, Rule "
         "Notes and codes from the upload are kept. Adjust and run again.")
 
 
 def _do_start_fresh() -> None:
-    """on_click handler — wipes persisted memory and unloads the file."""
+    """on_click handler — wipes persisted memory and unloads the file.
+
+    Local / public-demo only. Live mode uses ``_do_start_fresh_live`` so an
+    ungated click can never call ``clear_rules`` / ``clear_learned_mappings``.
+    """
+    if common.live_mode():
+        return
     _, storage, rules, *_ = common.services()
     rules.clear_rules()
     storage.clear_learned_mappings()
@@ -161,6 +169,43 @@ def _do_start_fresh() -> None:
     common.reset_file_session()
     common.set_flash("Cleared rules, learned mappings and Rule Notes. "
                      "Upload a file to begin again.")
+
+
+def _do_start_fresh_live() -> None:
+    """Live Start fresh: delete this client's *session files* only, then unload.
+
+    Does not touch SQLite rules, mappings, training, or models.
+    """
+    typed = (st.session_state.get("fresh_confirm_name") or "").strip()
+    client = (st.session_state.get("client_name") or "").strip()
+    st.session_state["confirm_action"] = None
+    if not client or typed != client:
+        common.set_flash("Start fresh cancelled — client name did not match.")
+        return
+    common.delete_live_session(client)
+    common.reset_file_session()
+    common.set_flash(
+        "Unloaded the file and deleted this client's saved workspace. "
+        "Rules, learned memory, and models were kept.")
+
+
+def _do_unload_file() -> None:
+    """Clear session state. Does not delete the saved workspace or SQLite."""
+    st.session_state["confirm_action"] = None
+    common.reset_file_session()
+    common.set_flash("File unloaded. Saved workspace and memory were kept.")
+
+
+def _do_unload_and_delete_session() -> None:
+    """Clear session state and delete this client's session folder only."""
+    st.session_state["confirm_action"] = None
+    client = (st.session_state.get("client_name") or "").strip()
+    if client:
+        common.delete_live_session(client)
+    common.reset_file_session()
+    common.set_flash(
+        "File unloaded and this client's saved workspace was deleted. "
+        "Rules and memory were kept.")
 
 
 @st.dialog("Please confirm", on_dismiss=_dismiss_confirm)
@@ -182,23 +227,63 @@ def _confirm_dialog(work, loaded, config, rules, storage) -> None:
                   on_click=_dismiss_confirm)
 
     elif kind == "start_fresh":
-        n_rules = len(rules.list_rules())
-        n_maps = len(storage.list_learned_mappings())
-        n_notes = storage.count_rule_notes()
-        st.warning(
-            "**Start fresh** permanently deletes everything below and unloads "
-            "the current file:")
-        st.markdown(
-            f"- All keyword rules (**{n_rules}**)\n"
-            f"- All learned mappings (**{n_maps}**)\n"
-            f"- All saved Rule Notes (**{n_notes}**)\n"
-            f"- The currently loaded file")
-        st.caption("Trained models and run history are kept. This cannot be "
-                   "undone.")
+        if common.live_mode():
+            client = (st.session_state.get("client_name") or "").strip()
+            st.warning(
+                "**Start fresh** on this hosted instance deletes this "
+                "client's *saved workspace files* and unloads the file. "
+                "Rules, learned memory, training examples, and models "
+                "are kept.")
+            st.text_input(
+                "Type the client name to confirm",
+                key="fresh_confirm_name",
+                placeholder=client or "client name")
+            typed = (st.session_state.get("fresh_confirm_name") or "").strip()
+            c1, c2 = st.columns([1.4, 1])
+            c1.button(
+                "Delete this client's workspace files", type="primary",
+                width="stretch", key="confirm_fresh_live_yes",
+                disabled=not client or typed != client,
+                on_click=_do_start_fresh_live)
+            c2.button("Cancel", width="stretch", key="confirm_fresh_live_no",
+                      on_click=_dismiss_confirm)
+        else:
+            n_rules = len(rules.list_rules())
+            n_maps = len(storage.list_learned_mappings())
+            n_notes = storage.count_rule_notes()
+            st.warning(
+                "**Start fresh** permanently deletes everything below and unloads "
+                "the current file:")
+            st.markdown(
+                f"- All keyword rules (**{n_rules}**)\n"
+                f"- All learned mappings (**{n_maps}**)\n"
+                f"- All saved Rule Notes (**{n_notes}**)\n"
+                f"- The currently loaded file")
+            st.caption("Trained models and run history are kept. This cannot be "
+                       "undone.")
+            c1, c2 = st.columns([1.4, 1])
+            c1.button("Yes, start fresh", type="primary", width="stretch",
+                      key="confirm_fresh_yes", on_click=_do_start_fresh)
+            c2.button("Cancel", width="stretch", key="confirm_fresh_no",
+                      on_click=_dismiss_confirm)
+
+    elif kind == "unload_file":
+        st.info(
+            "Unload this file from the browser session. Rules, learned "
+            "memory, and models are not touched.")
+        delete_saved = st.checkbox(
+            "Also delete this client's saved workspace on the volume",
+            key="unload_delete_saved",
+            value=False)
         c1, c2 = st.columns([1.4, 1])
-        c1.button("Yes, start fresh", type="primary", width="stretch",
-                  key="confirm_fresh_yes", on_click=_do_start_fresh)
-        c2.button("Cancel", width="stretch", key="confirm_fresh_no",
+        if delete_saved:
+            c1.button("Unload and delete saved workspace", type="primary",
+                      width="stretch", key="confirm_unload_delete",
+                      on_click=_do_unload_and_delete_session)
+        else:
+            c1.button("Unload file", type="primary", width="stretch",
+                      key="confirm_unload_keep", on_click=_do_unload_file)
+        c2.button("Cancel", width="stretch", key="confirm_unload_no",
                   on_click=_dismiss_confirm)
 
 
@@ -595,13 +680,22 @@ def _render_toolbar(work, loaded, counts: dict, config) -> dict:
     with r2[7].popover("Reset", use_container_width=True):
         _render_reset_controls()
 
-    r3 = st.columns([2.2, 2.2, 4])
+    if common.live_mode():
+        r3 = st.columns([2.0, 2.0, 1.6, 3.2])
+    else:
+        r3 = st.columns([2.2, 2.2, 4])
     with r3[0].popover("Automation settings", use_container_width=True):
         _render_automation_controls(config)
     with r3[1].popover("Add another export", use_container_width=True):
         _render_append_control(work, loaded, config)
+    review_col = r3[3] if common.live_mode() else r3[2]
+    if common.live_mode():
+        actions["save_workspace"] = r3[2].button(
+            "Save workspace", width="stretch", key="tb_save_workspace",
+            help="Write the current coded workbook to this server's "
+                 "persistent volume for this client.")
     if counts["review_pending"]:
-        if r3[2].button(
+        if review_col.button(
                 f"Review {counts['review_pending']:,} flagged row(s) →",
                 width="stretch", key="tb_goto_review",
                 help="Open the Review workspace: grouped, least-confident "
@@ -634,6 +728,7 @@ def _render_append_control(work, loaded, config) -> None:
                     work, loaded, up.getvalue(), up.name, config, storage)
                 st.session_state["work_df"] = new_work
             _bump()
+            common.persist_workspace()
             common.set_flash(
                 f"Added {audit['added']:,} new row(s) · skipped "
                 f"{audit['skipped']:,} duplicate(s) · protected "
@@ -666,13 +761,32 @@ def _render_reset_controls() -> None:
         st.session_state["export_open"] = False
         st.session_state["panel"] = None
         st.rerun()
-    if st.button("Start fresh", width="stretch", key="reset_start_fresh",
-                 help="Delete all rules, learned mappings and saved Rule Notes, "
-                      "and unload the current file."):
-        st.session_state["confirm_action"] = "start_fresh"
-        st.session_state["export_open"] = False
-        st.session_state["panel"] = None
-        st.rerun()
+    if common.live_mode():
+        if st.button("Unload file", width="stretch", key="reset_unload_file",
+                     help="Clear the spreadsheet from this browser session. "
+                          "Rules and learned memory stay. Optionally delete "
+                          "this client's saved workspace folder."):
+            st.session_state["confirm_action"] = "unload_file"
+            st.session_state["export_open"] = False
+            st.session_state["panel"] = None
+            st.rerun()
+        if st.button("Start fresh (this client)…", width="stretch",
+                     key="reset_start_fresh",
+                     help="Requires typing the client name. Deletes this "
+                          "client's saved workspace files only — not SQLite "
+                          "rules or memory."):
+            st.session_state["confirm_action"] = "start_fresh"
+            st.session_state["export_open"] = False
+            st.session_state["panel"] = None
+            st.rerun()
+    else:
+        if st.button("Start fresh", width="stretch", key="reset_start_fresh",
+                     help="Delete all rules, learned mappings and saved Rule Notes, "
+                          "and unload the current file."):
+            st.session_state["confirm_action"] = "start_fresh"
+            st.session_state["export_open"] = False
+            st.session_state["panel"] = None
+            st.rerun()
 
 
 def _render_automation_controls(config) -> None:
@@ -873,6 +987,7 @@ def _commit_with_undo(work, edited, loaded, storage, config, rules) -> None:
         if len(stack) > 30:
             del stack[0]
         st.session_state["redo_stack"] = []
+        common.persist_workspace()
     rc.queue_target_edit_prompts(counts.get("target_edits", []), rules)
 
 
@@ -931,6 +1046,7 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
             common.set_flash(msg)
             st.session_state["show_run_metrics"] = True
             _bump()
+            common.persist_workspace()
             st.rerun()
         except Exception as exc:  # noqa: BLE001
             st.error(f"The run did not complete: {exc}")
@@ -980,6 +1096,7 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
         # Show the impact immediately: jump the grid to the rule-filled rows.
         if n:
             st.session_state["_pending_filter_mode"] = "Filled by rules"
+        common.persist_workspace()
         st.rerun()
 
     # Rules + Memory — strict rules, then exact matches approved before.
@@ -1007,6 +1124,7 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
             f"{audit['left_blank']:,} still blank.")
         if n:
             st.session_state["_pending_filter_mode"] = "Filled only"
+        common.persist_workspace()
         st.rerun()
 
     # Hybrid rules run — explicit, separate action. Applies keyword rules, then
@@ -1051,6 +1169,7 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
             msg += (f"  Note: your rules matched {pbm} already-coded row(s) — "
                     "they work, but those cells already have a value.")
         common.set_flash(msg)
+        common.persist_workspace()
         st.rerun()
 
     # Open the rule-creation dialog, pre-filled from the checkbox selection.
@@ -1083,6 +1202,15 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
         common.set_flash(
             f"Approved {out['applied']} transaction(s); learned "
             f"{out['learned']} mapping(s).")
+        common.persist_workspace()
+        st.rerun()
+
+    if actions.get("save_workspace"):
+        if common.persist_workspace():
+            common.set_flash("Workspace saved to this server's persistent volume.")
+        else:
+            common.set_flash(
+                "Nothing to save — set a client name and load a file first.")
         st.rerun()
 
 

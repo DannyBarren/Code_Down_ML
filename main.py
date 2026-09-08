@@ -89,19 +89,36 @@ if not _dep_status.core_ok:
     setup.render_setup_screen(_dep_status)
     st.stop()
 
+# Live auth + data-dir probe run *before* ``common.services()`` / bootstrap.
+# bootstrap is ``@st.cache_resource`` and calls ``maybe_auto_reset`` — a public
+# visitor must not trigger that, and a missing volume must fail visibly.
+from src.config import DataDirUnwritable, probe_live_data_dir  # noqa: E402
+from ui.live_gate import enforce_live_auth  # noqa: E402
+
+enforce_live_auth()
+_live_dir_err = probe_live_data_dir()
+if _live_dir_err:
+    st.error(_live_dir_err)
+    st.stop()
+
 # Core deps are present — safe to import the rest of the app.
 from ui import common, insights, landing, panels, review, sidebar, spreadsheet  # noqa: E402
 from ui import guide  # noqa: E402  (isolated, additive User Guide page)
 
-config, storage, rules_manager, model_manager, logger = common.services()
+try:
+    config, storage, rules_manager, model_manager, logger = common.services()
+except DataDirUnwritable as exc:
+    st.error(str(exc))
+    st.stop()
 common.init_state(config)
 common.inject_css()
 
 # Demo convenience: in demo/HF mode, load the neutral sample dataset once per
 # session so the app opens with data ready to explore (a clean pitch experience).
-# Never auto-loads off-demo, and the one-time flag means "New file" / "Start
-# fresh" are respected afterwards.
-if common.demo_mode() and not st.session_state.get("demo_sample_loaded"):
+# Never auto-loads off-demo or in live mode, and the one-time flag means
+# "New file" / "Start fresh" are respected afterwards.
+if (common.should_auto_load_sample()
+        and not st.session_state.get("demo_sample_loaded")):
     if st.session_state.get("work_df") is None:
         common.load_sample(navigate=True)
     st.session_state["demo_sample_loaded"] = True

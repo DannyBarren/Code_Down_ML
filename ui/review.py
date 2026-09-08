@@ -136,6 +136,7 @@ def _render_group_cards(work, loaded, storage, config, client_id) -> None:
                         f"Group #{g['group_id']}: approved {n} row(s) at "
                         f"{out['code']} — learned for next time.")
                     _bump()
+                    common.persist_workspace()
                     st.rerun()
 
 
@@ -161,6 +162,7 @@ def _render_bulk_bar(work, loaded, storage, config, client_id, table) -> None:
             st.toast(f"Approved {out['applied']} · learned {out['learned']} · "
                      "queued for next model train")
             _bump()
+            common.persist_workspace()
             st.rerun()
 
         cutoff = b2.slider("Confidence ≥", 0.0, 1.0, 0.85, 0.05,
@@ -178,6 +180,7 @@ def _render_bulk_bar(work, loaded, storage, config, client_id, table) -> None:
             st.toast(f"Approved {out['applied']} · learned {out['learned']} · "
                      "queued for next model train")
             _bump()
+            common.persist_workspace()
             st.rerun()
 
         if b3.button(f"Apply suggested to selected ({len(selected):,})",
@@ -191,6 +194,7 @@ def _render_bulk_bar(work, loaded, storage, config, client_id, table) -> None:
             st.toast(f"Approved {out['applied']} · learned {out['learned']} · "
                      "queued for next model train")
             _bump()
+            common.persist_workspace()
             st.rerun()
 
         if b4.button(f"Reject selected ({len(selected):,})",
@@ -205,6 +209,7 @@ def _render_bulk_bar(work, loaded, storage, config, client_id, table) -> None:
             common.set_flash(
                 f"Rejected {out['rejected']} row(s) — left blank, not learned.")
             _bump()
+            common.persist_workspace()
             st.rerun()
 
         # Recode selected to a typed account.
@@ -233,6 +238,7 @@ def _render_bulk_bar(work, loaded, storage, config, client_id, table) -> None:
             st.toast(f"Re-coded {out['recoded']} · learned {out['learned']}")
             common.set_flash(msg)
             _bump()
+            common.persist_workspace()
             st.rerun()
 
 
@@ -285,6 +291,7 @@ def _render_review_table(work, loaded, storage, config, client_id,
             f"{out['learned']} learned"
             + (f", {out['cleared']} cleared" if out["cleared"] else "") + ".")
         _bump()
+        common.persist_workspace()
         st.rerun()
 
     # Promote an approved row to a reusable rule.

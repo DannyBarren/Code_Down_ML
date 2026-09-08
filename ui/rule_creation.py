@@ -209,6 +209,7 @@ def render_memory_bootstrap_banner(work, loaded, rules_manager, storage,
             common.set_flash(
                 "No blank rows matched a remembered code exactly. Run Rules — "
                 "Strict next, or Full Intelligent for broader matching.")
+        common.persist_workspace()
         st.rerun()
     if c2.button("Dismiss", width="stretch", key="bootstrap_dismiss"):
         st.session_state["memory_bootstrap_dismissed"] = True
