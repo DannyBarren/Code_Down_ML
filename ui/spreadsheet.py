@@ -511,7 +511,9 @@ def _render_header(loaded, counts: dict) -> None:
     title = "Spreadsheet" + (f" — {client}" if client else "")
     head = st.columns([3.2, 2.8])
     head[0].markdown(f"### {title}")
+    from src.ingest_profiles import profile_chip
     head[0].caption(f"{loaded.source_name} · {counts['total']:,} transactions · "
+                    f"{profile_chip(getattr(loaded, 'source_profile', ''))} · "
                     + _engine_status_text())
 
     pct = (counts["filled"] / counts["total"]) if counts["total"] else 0.0
@@ -593,11 +595,13 @@ def _render_toolbar(work, loaded, counts: dict, config) -> dict:
     with r2[7].popover("Reset", use_container_width=True):
         _render_reset_controls()
 
-    r3 = st.columns([2.2, 6])
+    r3 = st.columns([2.2, 2.2, 4])
     with r3[0].popover("Automation settings", use_container_width=True):
         _render_automation_controls(config)
+    with r3[1].popover("Add another export", use_container_width=True):
+        _render_append_control(work, loaded, config)
     if counts["review_pending"]:
-        if r3[1].button(
+        if r3[2].button(
                 f"Review {counts['review_pending']:,} flagged row(s) →",
                 width="stretch", key="tb_goto_review",
                 help="Open the Review workspace: grouped, least-confident "
@@ -605,6 +609,38 @@ def _render_toolbar(work, loaded, counts: dict, config) -> dict:
             st.session_state["view"] = "review"
             st.rerun()
     return actions
+
+
+def _render_append_control(work, loaded, config) -> None:
+    """Throughout-the-month ingest: append next week's export onto this book.
+
+    File-drop only — the accountant uploads the export they already downloaded.
+    Duplicates (same transaction signature + date + amount) are skipped and
+    existing codes are never overwritten.
+    """
+    _config, storage, *_ = services()
+    st.caption("Append another AppFolio / QuickBooks export onto this file. "
+               "Duplicates are skipped; existing codes are never touched.")
+    up = st.file_uploader("Choose a file (.xlsx or .csv)", key="append_uploader",
+                          type=["xlsx", "xlsm", "xls", "csv"],
+                          label_visibility="collapsed")
+    if st.button("Append rows", type="primary", width="stretch",
+                 key="append_apply", disabled=up is None):
+        from pathlib import Path
+        try:
+            with st.spinner("Appending new rows…"):
+                common.push_undo()
+                new_work, audit = sh.append_export(
+                    work, loaded, up.getvalue(), up.name, config, storage)
+                st.session_state["work_df"] = new_work
+            _bump()
+            common.set_flash(
+                f"Added {audit['added']:,} new row(s) · skipped "
+                f"{audit['skipped']:,} duplicate(s) · protected "
+                f"{audit['protected']:,} coded.")
+            st.rerun()
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Could not append that file: {exc}")
 
 
 def _render_reset_controls() -> None:
