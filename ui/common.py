@@ -182,19 +182,34 @@ def current_client_id() -> Optional[str]:
     chosen = name or durable
     if chosen:
         st.session_state["_live_client_name"] = chosen
-        if not name:
-            st.session_state["client_name"] = chosen
     return chosen or None
 
 
 def remember_client_name(name: Optional[str] = None) -> str:
-    """Keep the human client name in a non-widget key. Returns the stored name."""
-    chosen = (name if name is not None
-              else st.session_state.get("client_name") or "").strip()
+    """Keep the human client name in a non-widget key. Returns the stored name.
+
+    Never writes ``client_name`` — that key is bound to the landing text
+    input and Streamlit raises if it is assigned after the widget exists.
+    """
+    if name is None:
+        chosen = (st.session_state.get("client_name") or "").strip() \
+            or (st.session_state.get("_live_client_name") or "").strip()
+    else:
+        chosen = (name or "").strip()
     if chosen:
         st.session_state["_live_client_name"] = chosen
-        st.session_state["client_name"] = chosen
     return chosen
+
+
+def seed_client_name_widget() -> None:
+    """Copy the durable name into ``client_name`` *before* the landing widget.
+
+    Call only from ``main.py`` after ``init_state`` and before any view
+    renders. Safe no-op when the key is already set.
+    """
+    durable = (st.session_state.get("_live_client_name") or "").strip()
+    if durable and not (st.session_state.get("client_name") or "").strip():
+        st.session_state["client_name"] = durable
 
 
 # Per-client ModelManager cache (per process). Models live on disk under
