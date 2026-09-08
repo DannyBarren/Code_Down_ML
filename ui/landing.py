@@ -95,7 +95,7 @@ def render_landing() -> None:
                   "all of those."
                   if live else
                   "Used to label exports and run history."))
-        client_name = (st.session_state.get("client_name") or "").strip()
+        client_name = common.remember_client_name()
         if live and not client_name:
             st.caption("Enter a client name before uploading or resuming. "
                        "An empty name mixes books on this shared instance.")
@@ -149,9 +149,11 @@ def render_landing() -> None:
         st.markdown("### No file yet?")
         st.write("Load a representative sample dataset to evaluate the workflow.")
         sample_disabled = live and not client_name
-        st.button("Load sample dataset", width="stretch",
-                  key="landing_sample", on_click=common.load_sample,
-                  kwargs={"navigate": True}, disabled=sample_disabled)
+        if st.button("Load sample dataset", width="stretch",
+                     key="landing_sample", disabled=sample_disabled):
+            common.remember_client_name(client_name)
+            common.load_sample(navigate=True)
+            st.rerun()
 
         st.markdown("---")
         runs = storage.list_runs(limit=3)

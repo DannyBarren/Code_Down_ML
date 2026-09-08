@@ -144,6 +144,7 @@ def init_state(config) -> None:
         "demo_sample_loaded": False,  # demo: auto-load sample once per session
         "source_sheet": 0,            # sheet index/name used on last load
         "client_name": "",
+        "_live_client_name": "",      # durable copy; widget key can evaporate
     }
     for key, val in defaults.items():
         st.session_state.setdefault(key, val)
@@ -169,9 +170,31 @@ def show_flash() -> None:
 # Engine + loading
 # --------------------------------------------------------------------------- #
 def current_client_id() -> Optional[str]:
-    """The active client/project name as a storage client id (None = shared)."""
-    name = st.session_state.get("client_name") or ""
-    return name.strip() or None
+    """The active client/project name as a storage client id (None = shared).
+
+    ``client_name`` is also a Streamlit widget key on the landing page. When
+    that widget is not rendered (spreadsheet / review / insights) some
+    Streamlit versions drop the key. ``_live_client_name`` is the durable copy
+    used for memory scope and the session folder.
+    """
+    name = (st.session_state.get("client_name") or "").strip()
+    durable = (st.session_state.get("_live_client_name") or "").strip()
+    chosen = name or durable
+    if chosen:
+        st.session_state["_live_client_name"] = chosen
+        if not name:
+            st.session_state["client_name"] = chosen
+    return chosen or None
+
+
+def remember_client_name(name: Optional[str] = None) -> str:
+    """Keep the human client name in a non-widget key. Returns the stored name."""
+    chosen = (name if name is not None
+              else st.session_state.get("client_name") or "").strip()
+    if chosen:
+        st.session_state["_live_client_name"] = chosen
+        st.session_state["client_name"] = chosen
+    return chosen
 
 
 # Per-client ModelManager cache (per process). Models live on disk under
@@ -362,7 +385,7 @@ def persist_workspace() -> bool:
         return False
     work = st.session_state.get("work_df")
     raw = st.session_state.get("original_bytes")
-    name = (st.session_state.get("client_name") or "").strip()
+    name = remember_client_name() or (current_client_id() or "")
     loaded = st.session_state.get("loaded")
     if work is None or raw is None or not name:
         return False
@@ -411,7 +434,7 @@ def restore_workspace(client_name: str, navigate: bool = True) -> bool:
     st.session_state["original_bytes"] = raw
     st.session_state["original_ext"] = ext
     st.session_state["source_sheet"] = sheet
-    st.session_state["client_name"] = payload.get("client_name") or name
+    remember_client_name(payload.get("client_name") or name)
     st.session_state["last_result"] = None
     st.session_state["undo_stack"] = []
     st.session_state["redo_stack"] = []

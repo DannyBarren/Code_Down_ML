@@ -111,6 +111,7 @@ except DataDirUnwritable as exc:
     st.error(str(exc))
     st.stop()
 common.init_state(config)
+common.current_client_id()  # rehydrate durable client name after widget-key drop
 common.inject_css()
 
 # Demo convenience: in demo/HF mode, load the neutral sample dataset once per
