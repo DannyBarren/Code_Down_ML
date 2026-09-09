@@ -22,6 +22,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 
 
+def _env_flag(name: str) -> bool:
+    """True when ``name`` is set to 1 / true / yes (case-insensitive)."""
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes"}
+
+
 def is_hf_space() -> bool:
     """True when running inside a Hugging Face Space (HF sets ``SPACE_ID``)."""
     return bool(os.environ.get("SPACE_ID") or os.environ.get("HF_SPACE_ID"))
@@ -31,23 +36,64 @@ def is_demo() -> bool:
     """True for the public demo build.
 
     Triggered by ``FILLDOWN_DEMO=1`` (set in the Dockerfile) or automatically
-    when deployed to a Hugging Face Space.
+    when deployed to a Hugging Face Space. Detection is independent of
+    ``is_live()`` — when both flags are set, live *wins* on wipe / sample
+    auto-load / auth (see ``demo_reset_enabled`` and ``ui.common.demo_mode``).
     """
-    flag = os.environ.get("FILLDOWN_DEMO", "").strip().lower() in {"1", "true", "yes"}
-    return flag or is_hf_space()
+    return _env_flag("FILLDOWN_DEMO") or is_hf_space()
+
+
+def is_live() -> bool:
+    """True for a hosted client instance (``FILLDOWN_LIVE=1``).
+
+    Railway is treated as live only when this flag is set — ``is_railway()``
+    alone never flips a public demo into live mode.
+    """
+    return _env_flag("FILLDOWN_LIVE")
+
+
+def is_railway() -> bool:
+    """True when Railway injects its environment / volume variables."""
+    return bool(os.environ.get("RAILWAY_ENVIRONMENT")
+                or os.environ.get("RAILWAY_VOLUME_MOUNT_PATH"))
+
+
+def auth_password() -> str:
+    """Shared password for the live gate. Empty means 'not set'."""
+    return os.environ.get("FILLDOWN_AUTH_PASSWORD", "").strip()
+
+
+def live_boot_blocked() -> bool:
+    """True when live mode must refuse to render (password missing).
+
+    Local and public-demo runs are never blocked. The password is never
+    logged or returned here — callers only learn whether boot is allowed.
+    """
+    return is_live() and not bool(auth_password())
 
 
 def demo_reset_enabled() -> bool:
     """Whether Fresh Demo Mode should auto-wipe data on startup.
 
     On by default in demo/HF context; set ``FILLDOWN_DEMO_RESET=0`` to keep data
-    across restarts (useful with HF persistent storage). Never true off-demo, so
-    local/production installs are never wiped automatically.
+    across restarts (useful with HF persistent storage). Never true off-demo,
+    and **never true in live mode** even if ``FILLDOWN_DEMO=1`` is also set —
+    a hosted client book must survive deploys and restarts.
     """
+    if is_live():
+        return False
     if not is_demo():
         return False
     return os.environ.get("FILLDOWN_DEMO_RESET", "1").strip().lower() \
         not in {"0", "false", "no"}
+
+
+class DataDirUnwritable(RuntimeError):
+    """Live instance cannot write the configured data directory.
+
+    Raised instead of silently falling through to ``/tmp/code_down_ML``, which
+    would look like persistence is on while every deploy wipes the book.
+    """
 
 
 def _is_writable(path: Path) -> bool:
@@ -61,6 +107,15 @@ def _is_writable(path: Path) -> bool:
         return False
 
 
+def _configured_data_dirs() -> List[Path]:
+    dirs: List[Path] = []
+    for env in ("FILLDOWN_DATA_DIR", "HF_DATA_DIR"):
+        val = os.environ.get(env)
+        if val:
+            dirs.append(Path(val).expanduser())
+    return dirs
+
+
 def select_data_dir() -> Path:
     """Pick the first writable data directory.
 
@@ -68,12 +123,28 @@ def select_data_dir() -> Path:
     storage mounts at ``/data``). Falls back to the project-local ``data/`` and
     finally a temp dir, so the app never crashes on a read-only filesystem
     (e.g. an HF Space without persistent storage attached).
+
+    In **live** mode the silent temp fallback is forbidden: if the configured
+    dir (or ``./data`` when unset) is not writable, raise
+    :class:`DataDirUnwritable` so the operator sees it.
     """
-    candidates = []
-    for env in ("FILLDOWN_DATA_DIR", "HF_DATA_DIR"):
-        val = os.environ.get(env)
-        if val:
-            candidates.append(Path(val).expanduser())
+    env_dirs = _configured_data_dirs()
+    if is_live():
+        preferred = env_dirs[0] if env_dirs else (PROJECT_ROOT / "data")
+        # Prefer the first writable configured dir; never walk into /tmp.
+        for cand in (env_dirs or [preferred]):
+            if _is_writable(cand):
+                return cand
+        target = env_dirs[0] if env_dirs else preferred
+        raise DataDirUnwritable(
+            "This hosted client instance cannot write its data directory "
+            f"({target}). Mount a persistent volume at /data and set "
+            "RAILWAY_RUN_UID=0 so the container can write it. Refusing to "
+            "fall back to a temporary directory — that would look like "
+            "persistence is on while every restart wipes the book."
+        )
+
+    candidates = list(env_dirs)
     candidates.append(PROJECT_ROOT / "data")
     candidates.append(Path(tempfile.gettempdir()) / "code_down_ML")
     for cand in candidates:
@@ -81,6 +152,17 @@ def select_data_dir() -> Path:
             return cand
     # Last resort: project-local (config.ensure_dirs will surface any error).
     return PROJECT_ROOT / "data"
+
+
+def probe_live_data_dir() -> Optional[str]:
+    """Return an error message if the live data dir is unusable, else None."""
+    if not is_live():
+        return None
+    try:
+        select_data_dir()
+    except DataDirUnwritable as exc:
+        return str(exc)
+    return None
 
 
 class AppConfig(BaseModel):
@@ -264,10 +346,15 @@ class Config(BaseModel):
             return base.joinpath(*parts[1:]) if len(parts) > 1 else base
         return Path(self.project_root) / path
 
+    def abs_sessions_dir(self) -> Path:
+        """Per-client live workspace folders (``{data_dir}/sessions/<slug>/``)."""
+        return Path(self.data_dir) / "sessions"
+
     def ensure_dirs(self) -> None:
         """Create any directories the app needs to write into."""
         for path in (self.abs_db_path().parent, self.abs_work_dir(),
-                     self.abs_log_file().parent, self.abs_model_store_dir()):
+                     self.abs_log_file().parent, self.abs_model_store_dir(),
+                     self.abs_sessions_dir()):
             path.mkdir(parents=True, exist_ok=True)
 
 

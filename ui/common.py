@@ -46,7 +46,7 @@ def bootstrap():
     """
     import os
 
-    from src.config import is_demo
+    from src.config import is_demo, is_live
     from utils import demo_utils
 
     config = load_config()
@@ -66,7 +66,9 @@ def bootstrap():
     rules = RulesManager(storage)
     # In demo mode start with zero rules so it looks brand new; otherwise seed
     # the illustrative starter rules as usual.
-    if not is_demo():
+    # Live wins over demo: a hosted client instance should seed the starter
+    # rules like a local install. Public demo stays empty so it looks unused.
+    if is_live() or not is_demo():
         rules.seed_default_rules()
     _log_engine_status(config, storage, model_manager)
     return config, storage, rules, model_manager
@@ -140,6 +142,9 @@ def init_state(config) -> None:
         "show_install_page": False,
         "confirm_action": None,       # None | clear_spreadsheet | start_fresh
         "demo_sample_loaded": False,  # demo: auto-load sample once per session
+        "source_sheet": 0,            # sheet index/name used on last load
+        "client_name": "",
+        "_live_client_name": "",      # durable copy; widget key can evaporate
     }
     for key, val in defaults.items():
         st.session_state.setdefault(key, val)
@@ -165,9 +170,46 @@ def show_flash() -> None:
 # Engine + loading
 # --------------------------------------------------------------------------- #
 def current_client_id() -> Optional[str]:
-    """The active client/project name as a storage client id (None = shared)."""
-    name = st.session_state.get("client_name") or ""
-    return name.strip() or None
+    """The active client/project name as a storage client id (None = shared).
+
+    ``client_name`` is also a Streamlit widget key on the landing page. When
+    that widget is not rendered (spreadsheet / review / insights) some
+    Streamlit versions drop the key. ``_live_client_name`` is the durable copy
+    used for memory scope and the session folder.
+    """
+    name = (st.session_state.get("client_name") or "").strip()
+    durable = (st.session_state.get("_live_client_name") or "").strip()
+    chosen = name or durable
+    if chosen:
+        st.session_state["_live_client_name"] = chosen
+    return chosen or None
+
+
+def remember_client_name(name: Optional[str] = None) -> str:
+    """Keep the human client name in a non-widget key. Returns the stored name.
+
+    Never writes ``client_name`` — that key is bound to the landing text
+    input and Streamlit raises if it is assigned after the widget exists.
+    """
+    if name is None:
+        chosen = (st.session_state.get("client_name") or "").strip() \
+            or (st.session_state.get("_live_client_name") or "").strip()
+    else:
+        chosen = (name or "").strip()
+    if chosen:
+        st.session_state["_live_client_name"] = chosen
+    return chosen
+
+
+def seed_client_name_widget() -> None:
+    """Copy the durable name into ``client_name`` *before* the landing widget.
+
+    Call only from ``main.py`` after ``init_state`` and before any view
+    renders. Safe no-op when the key is already set.
+    """
+    durable = (st.session_state.get("_live_client_name") or "").strip()
+    if durable and not (st.session_state.get("client_name") or "").strip():
+        st.session_state["client_name"] = durable
 
 
 # Per-client ModelManager cache (per process). Models live on disk under
@@ -234,7 +276,10 @@ def load_into_session(raw: bytes, name: str, ext: str, sheet=0) -> None:
     st.session_state["work_df"] = sh.build_work_df(loaded, storage, config)
     st.session_state["original_bytes"] = raw
     st.session_state["original_ext"] = ext
+    st.session_state["source_sheet"] = sheet
     st.session_state["last_result"] = None
+    st.session_state.pop("last_rule_audit", None)
+    st.session_state.pop("last_run_metrics", None)
     st.session_state["undo_stack"] = []
     st.session_state["redo_stack"] = []
     st.session_state["page"] = 0
@@ -244,6 +289,7 @@ def load_into_session(raw: bytes, name: str, ext: str, sheet=0) -> None:
     st.session_state["rule_panel_open"] = False
     st.session_state["memory_bootstrap_dismissed"] = False
     st.session_state["ingest_banner_dismissed"] = False
+    persist_workspace()
 
 
 def reset_file_session() -> None:
@@ -256,6 +302,7 @@ def reset_file_session() -> None:
     st.session_state["work_df"] = None
     st.session_state["original_bytes"] = None
     st.session_state["original_ext"] = None
+    st.session_state["source_sheet"] = 0
     st.session_state["last_result"] = None
     st.session_state["undo_stack"] = []
     st.session_state["redo_stack"] = []
@@ -337,11 +384,141 @@ def redo() -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# Demo mode (Hugging Face Spaces public demo)
+# Live hosted instance + public demo
 # --------------------------------------------------------------------------- #
+def live_mode() -> bool:
+    """True when running as a hosted client instance (``FILLDOWN_LIVE=1``)."""
+    from src.config import is_live
+    return is_live()
+
+
+def persist_workspace() -> bool:
+    """Save the coded workbook for the active client. No-op off-live.
+
+    Called after explicit mutations (load, run, review, append, Save). Never
+    from a data-editor keystroke path unless a value actually changed.
+    """
+    if not live_mode():
+        return False
+    work = st.session_state.get("work_df")
+    raw = st.session_state.get("original_bytes")
+    name = remember_client_name() or (current_client_id() or "")
+    loaded = st.session_state.get("loaded")
+    if work is None or raw is None or not name:
+        return False
+    try:
+        from utils import session_store
+        config, *_ = services()
+        dest = session_store.save_workspace(
+            config.data_dir, name,
+            work_df=work,
+            original_bytes=raw,
+            original_ext=st.session_state.get("original_ext") or "",
+            source_name=getattr(loaded, "source_name", "") if loaded else "",
+            sheet=st.session_state.get("source_sheet", 0),
+        )
+        return dest is not None
+    except Exception:  # noqa: BLE001 - persistence must never crash the UI
+        get_logger("ui").warning("workspace_persist_failed")
+        return False
+
+
+def restore_workspace(client_name: str, navigate: bool = True) -> bool:
+    """Rebuild session state from a saved live workspace. No-op off-live."""
+    if not live_mode():
+        return False
+    name = (client_name or "").strip()
+    if not name:
+        return False
+    try:
+        from utils import session_store
+        config, *_ = services()
+        payload = session_store.load_workspace(config.data_dir, name)
+    except Exception:  # noqa: BLE001
+        set_flash("Could not restore the last workspace.")
+        return False
+    if not payload:
+        return False
+
+    raw = payload["original_bytes"]
+    source_name = payload["source_name"] or "restored.xlsx"
+    sheet = payload.get("sheet", 0)
+    ext = payload.get("original_ext") or Path(source_name).suffix.lower() or ".xlsx"
+    loaded = load_dataframe(raw, config, source_name=source_name,
+                            sheet_name=sheet)
+    st.session_state["loaded"] = loaded
+    st.session_state["work_df"] = payload["work_df"]
+    st.session_state["original_bytes"] = raw
+    st.session_state["original_ext"] = ext
+    st.session_state["source_sheet"] = sheet
+    remember_client_name(payload.get("client_name") or name)
+    st.session_state["last_result"] = None
+    st.session_state["undo_stack"] = []
+    st.session_state["redo_stack"] = []
+    st.session_state["page"] = 0
+    st.session_state["hide_rule_suggestions"] = False
+    st.session_state["rule_prompt"] = None
+    st.session_state["dismissed_rule_prompts"] = []
+    st.session_state["rule_panel_open"] = False
+    st.session_state["memory_bootstrap_dismissed"] = False
+    st.session_state["ingest_banner_dismissed"] = False
+    st.session_state["data_version"] = st.session_state.get("data_version", 0) + 1
+    if navigate:
+        st.session_state["view"] = "spreadsheet"
+        st.session_state["panel"] = None
+    set_flash(
+        f"Restored '{source_name}' ({len(payload['work_df']):,} rows).")
+    return True
+
+
+def delete_live_session(client_name: Optional[str] = None) -> bool:
+    """Delete one client's session folder. Does not touch SQLite."""
+    if not live_mode():
+        return False
+    name = (client_name or current_client_id() or "").strip()
+    if not name:
+        return False
+    try:
+        from utils import session_store
+        config, *_ = services()
+        return session_store.delete_workspace(config.data_dir, name)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def live_workspace_exists(client_name: Optional[str] = None) -> bool:
+    if not live_mode():
+        return False
+    name = (client_name or current_client_id() or "").strip()
+    if not name:
+        return False
+    from utils import session_store
+    config, *_ = services()
+    return session_store.workspace_exists(config.data_dir, name)
+
+
+def list_live_sessions() -> list:
+    if not live_mode():
+        return []
+    from utils import session_store
+    config, *_ = services()
+    return session_store.list_sessions(config.data_dir)
+
+
+def should_auto_load_sample() -> bool:
+    """Public-demo convenience. Never in live mode, never locally."""
+    return demo_mode() and not live_mode()
+
+
 def demo_mode() -> bool:
-    """True when running as the public demo (``FILLDOWN_DEMO=1`` or on HF)."""
-    from src.config import is_demo
+    """True when running as the public demo (``FILLDOWN_DEMO=1`` or on HF).
+
+    Live wins: a hosted client instance with both flags set is *not* treated
+    as the public demo (no sample auto-load, no Reset demo data, no wipe).
+    """
+    from src.config import is_demo, is_live
+    if is_live():
+        return False
     return is_demo()
 
 
@@ -353,6 +530,14 @@ def _persistent_storage() -> bool:
 
 def render_demo_banner() -> None:
     """Prominent, one-line demo notice shown on every page in demo mode."""
+    if live_mode():
+        st.warning(
+            "**Hosted client instance** — data is stored on this server's "
+            "persistent volume. Use a client name. Switching the name switches "
+            "memory scope **and** the saved workspace folder. Do not upload "
+            "data you are not authorized to process.",
+            icon=":material/info:")
+        return
     if not demo_mode():
         return
     if _persistent_storage():
