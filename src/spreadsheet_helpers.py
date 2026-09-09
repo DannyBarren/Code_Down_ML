@@ -1415,6 +1415,16 @@ def review_rows_df(work_df: pd.DataFrame, loaded: LoadedData,
     if include_no_match:
         actions.add(FillAction.NO_MATCH.value)
     mask = work_df[ACTION_COL].astype(str).isin(actions)
+    if include_no_match:
+        # Strict (and other rule-only runs) leave unmatched blanks with an
+        # empty action — they never wrote ``no_match``. Those leftovers
+        # must still be reachable from Review without a second engine run.
+        blank = work_df[na_col].astype(str).str.strip() == ""
+        decided = work_df[ACTION_COL].astype(str).isin({
+            FillAction.FILLED_REVIEW.value, FillAction.NEEDS_REVIEW.value,
+            FillAction.AUTO_FILLED.value, FillAction.KEPT_SEED.value,
+        })
+        mask = mask | (blank & ~decided)
     idxs = [int(i) for i in work_df.index[mask]]
     if not idxs:
         return pd.DataFrame()
@@ -1467,7 +1477,10 @@ def apply_review_table(work_df: pd.DataFrame, loaded: LoadedData,
     ensure_state_columns(work_df)
     na_col = loaded.new_account_col
     counts = {"applied": 0, "learned": 0, "cleared": 0}
-    if edited is None or edited.empty or "row" not in edited.columns:
+    if edited is None or edited.empty:
+        return counts
+    edited = _normalize_review_editor(edited)
+    if "row" not in edited.columns:
         return counts
 
     for _, row in edited.iterrows():
@@ -1505,6 +1518,16 @@ def apply_review_table(work_df: pd.DataFrame, loaded: LoadedData,
             work_df.at[idx, ENGINE_COL] = ""
             counts["cleared"] += 1
     return counts
+
+
+def _normalize_review_editor(edited: pd.DataFrame) -> pd.DataFrame:
+    """Map accountant-facing Keep / Account labels back to helper columns."""
+    rename = {}
+    if "Approve" not in edited.columns and "Keep" in edited.columns:
+        rename["Keep"] = "Approve"
+    if "New Account" not in edited.columns and "Account" in edited.columns:
+        rename["Account"] = "New Account"
+    return edited.rename(columns=rename) if rename else edited
 
 
 def _safe_float(value, default: float) -> float:
@@ -1568,6 +1591,43 @@ def group_review_summary(work_df: pd.DataFrame, loaded: LoadedData,
         })
     out.sort(key=lambda g: (-g["rows"], g["group_id"]))
     return out
+
+
+def next_leftover(work_df: pd.DataFrame, loaded: LoadedData,
+                  table: Optional[pd.DataFrame] = None,
+                  high_cutoff: float = 0.85) -> Optional[Dict[str, object]]:
+    """The one leftover Amanda should decide next.
+
+    Least-confident *consensus* pile when one exists, otherwise the
+    least-confident single row from ``table`` (already sorted least-sure
+    first). Split piles are never returned as a one-click Keep target.
+    """
+    groups = group_review_summary(work_df, loaded, high_cutoff=high_cutoff)
+    consensus = [g for g in groups if not g["split"] and g.get("suggested")]
+    if consensus:
+        consensus.sort(key=lambda g: (float(g.get("avg_confidence") or 0.0),
+                                      -int(g["rows"]), int(g["group_id"])))
+        return {"kind": "group", "group": consensus[0]}
+    if table is not None and not table.empty:
+        top = table.iloc[0]
+        return {"kind": "row", "row": int(top["row"]), "record": top}
+    return None
+
+
+def reject_similarity_group(work_df: pd.DataFrame, loaded: LoadedData,
+                            storage: Storage, group_id: int,
+                            client_id: Optional[str] = None) -> Dict[str, int]:
+    """Not this on a look-alike pile (split or consensus).
+
+    Blocks every suggested pairing in the pile and leaves blank rows blank.
+    Seed / manual codes are never cleared. Never writes learned mappings.
+    """
+    summary = next((g for g in group_review_summary(work_df, loaded)
+                    if g["group_id"] == int(group_id)), None)
+    if summary is None:
+        return {"rejected": 0, "blocked": 0}
+    return reject_rows(work_df, loaded, storage, list(summary["indices"]),
+                       client_id=client_id)
 
 
 def approve_similarity_group(work_df: pd.DataFrame, loaded: LoadedData,
