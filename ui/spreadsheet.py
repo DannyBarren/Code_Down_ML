@@ -340,12 +340,13 @@ def _render_run_metrics(work, loaded, counts: dict) -> None:
             st.dataframe(bt, width="stretch", hide_index=True,
                          height=min(60 + 35 * len(bt), 260))
 
-        b = st.columns([1.6, 1.4, 3])
-        b[0].button("Reset run (un-run)", key="reset_run_from_metrics",
+        b = st.columns([2.2, 1.4, 1.4])
+        _render_review_cta(b[0], counts, key="metrics_goto_review")
+        b[1].button("Reset run (un-run)", key="reset_run_from_metrics",
                     on_click=_do_reset_run,
                     help="Don't like these results? Clear all auto-filled codes "
                          "(keeps your rules and notes) and run again.")
-        b[1].button("Dismiss summary", key="dismiss_run_metrics",
+        b[2].button("Dismiss summary", key="dismiss_run_metrics",
                     on_click=_clear_run_metrics)
 
 
@@ -395,12 +396,14 @@ def _render_rule_audit(work, loaded) -> None:
         with tab_raw:
             _render_matched_raw(work, loaded, audit)
 
-        b = st.columns([1.6, 1.4, 3])
-        b[0].button("Reset run (un-run)", key="reset_run_from_audit",
+        counts = sh.summary_counts(work, loaded)
+        b = st.columns([2.2, 1.4, 1.4])
+        _render_review_cta(b[0], counts, key="audit_goto_review")
+        b[1].button("Reset run (un-run)", key="reset_run_from_audit",
                     on_click=_do_reset_run,
                     help="Don't like these results? Clear all auto-filled codes "
                          "(keeps your rules and notes) and run again.")
-        b[1].button("Dismiss results", key="dismiss_rule_audit",
+        b[2].button("Dismiss results", key="dismiss_rule_audit",
                     on_click=_clear_rule_audit)
 
 
@@ -694,15 +697,34 @@ def _render_toolbar(work, loaded, counts: dict, config) -> dict:
             "Save workspace", width="stretch", key="tb_save_workspace",
             help="Write the current coded workbook to this server's "
                  "persistent volume for this client.")
-    if counts["review_pending"]:
-        if review_col.button(
-                f"Review {counts['review_pending']:,} flagged row(s) →",
-                width="stretch", key="tb_goto_review",
-                help="Open the Review workspace: grouped, least-confident "
-                     "first, with one-click group approvals."):
-            st.session_state["view"] = "review"
-            st.rerun()
+    _render_review_cta(review_col, counts, key="tb_goto_review")
     return actions
+
+
+def _open_review(*, include_blanks: bool = False) -> None:
+    if include_blanks:
+        st.session_state["review_include_no_match"] = True
+    st.session_state["view"] = "review"
+    st.rerun()
+
+
+def _render_review_cta(slot, counts: dict, *, key: str) -> None:
+    """Loud button after a run: leftovers first, then unmatched blanks."""
+    pending = int(counts.get("review_pending") or 0)
+    blanks = int(counts.get("blank") or 0)
+    if pending:
+        if slot.button(
+                f"Review {pending:,} rows that need you →",
+                type="primary", width="stretch", key=key,
+                help="Open Review: Keep / Fix / Not this, least-sure first."):
+            _open_review()
+    elif blanks:
+        if slot.button(
+                f"Review {blanks:,} blank rows →",
+                type="primary", width="stretch", key=key,
+                help="Open Review and show rows with no suggestion yet so "
+                     "you can type an account from this screen."):
+            _open_review(include_blanks=True)
 
 
 def _render_append_control(work, loaded, config) -> None:
@@ -1039,7 +1061,7 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
             counts = sh.summary_counts(work, loaded)
             msg = (f"Filled {counts['filled']:,} transactions "
                    f"({counts['auto_filled']:,} automatically). "
-                   f"{counts['review_pending']:,} flagged for review.")
+                   f"{counts['review_pending']:,} rows that need you.")
             note = common.value_note(counts)
             if note:
                 msg += f"  {note}."
