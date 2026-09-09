@@ -278,6 +278,8 @@ def load_into_session(raw: bytes, name: str, ext: str, sheet=0) -> None:
     st.session_state["original_ext"] = ext
     st.session_state["source_sheet"] = sheet
     st.session_state["last_result"] = None
+    st.session_state.pop("last_rule_audit", None)
+    st.session_state.pop("last_run_metrics", None)
     st.session_state["undo_stack"] = []
     st.session_state["redo_stack"] = []
     st.session_state["page"] = 0
