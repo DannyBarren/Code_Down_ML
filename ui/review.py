@@ -1,22 +1,21 @@
-"""The Review inbox — leftovers get a yes / fix / no decision.
+"""The Review workspace — leftovers get a Keep / Fix / Not this decision.
 
 A first-class, full-width view that shows ONLY the rows that need a human
 (``filled_review`` / ``needs_review``, optionally ``no_match``), sorted
 least-confident first and grouped by similarity cluster.
 
-Built so an accountant never has to go back to the spreadsheet to tick rows:
+The accountant loop is three verbs:
 
-* the next-up card is the least-confident leftover — one click Approves,
-  Fixes, or marks Not this (reject + block, never learns),
-* look-alike piles still one-click approve; split groups refuse; Not this
-  rejects the whole pile,
-* the table batches per-row ticks into a single Save click (Streamlit has no
-  reliable per-key handler),
-* every approval flows through the single learning path (memory + training
-  + account knowledge), and every reject *blocks* the bad pairing.
+* **Keep** — accept the suggested code, protect it, teach memory.
+* **Fix** — type the right account and learn that instead.
+* **Not this** — leave the row blank and *block* the bad pairing so it
+  does not come back.
 
-All mutations go through ``src/spreadsheet_helpers`` and honour the hard
-invariant: existing codes (seeds / manual edits) are never overwritten.
+Streamlit has no reliable per-row button inside ``st.data_editor``, so the
+table still batches ticks into one Apply click. Group cards and the inbox
+card at the top are one-click. All mutations go through
+``src/spreadsheet_helpers`` and honour the hard invariant: existing codes
+(seeds / manual edits) are never overwritten.
 """
 
 from __future__ import annotations
@@ -46,23 +45,30 @@ def render_review() -> None:
 
     head = st.columns([3.4, 2])
     client = st.session_state.get("client_name") or ""
-    head[0].markdown("### Review" + (f" — {client}" if client else ""))
+    head[0].markdown(f"### Review" + (f" — {client}" if client else ""))
     head[0].caption(
-        f"{loaded.source_name} · {counts['review_pending']:,} need a decision"
-        f" · {counts['blank']:,} still blank")
+        f"{loaded.source_name} · {counts['review_pending']:,} leftover(s) "
+        f"need a decision · {counts['blank']:,} still blank")
     if head[1].button("← Back to spreadsheet", width="stretch"):
         st.session_state["view"] = "spreadsheet"
         st.rerun()
 
-    include_no_match = bool(st.session_state.get("review_include_no_match", False))
+    include_no_match = st.toggle(
+        "Also show rows with no suggestion yet",
+        value=bool(st.session_state.get("review_include_no_match", False)),
+        key="review_include_no_match",
+        help="Include blank rows the run could not suggest a code for, so you "
+             "can type one from this screen.")
+
     table = sh.review_rows_df(work, loaded, include_no_match=include_no_match)
 
     if table.empty:
         st.success(
-            f"Nothing left to review. {counts['filled']:,} of "
+            f"Queue is clear. {counts['filled']:,} of "
             f"{counts['total']:,} rows are coded"
-            + (f" ({counts['blank']:,} still blank — code one example or add a "
-               "rule and run again)" if counts["blank"] else "")
+            + (f" ({counts['blank']:,} still blank — turn on ‘no suggestion "
+               f"yet’ above, or add a rule and run again)"
+               if counts["blank"] else "")
             + ". Export when you're ready.")
         c1, c2, _ = st.columns([1.4, 1.4, 3])
         if c1.button("Open spreadsheet", width="stretch", key="rev_empty_grid"):
@@ -75,15 +81,9 @@ def render_review() -> None:
             st.rerun()
         return
 
-    st.caption(
-        "You only see what the rules would not stake their name on. "
-        "**Looks right** codes it and remembers. **Not this** leaves it blank "
-        "and will not suggest that pairing again. Existing codes are never "
-        "overwritten.")
-
-    _render_next_up(work, loaded, storage, config, client_id, table)
+    _render_inbox_card(work, loaded, storage, config, client_id, table)
     _render_group_cards(work, loaded, storage, config, client_id)
-    _render_bulk_bar(work, loaded, storage, config, client_id, table)
+    _render_decide_bar(work, loaded, storage, config, client_id, table)
     _render_review_table(work, loaded, storage, config, client_id, table)
 
     if st.session_state.get("rule_panel_open"):
@@ -91,94 +91,126 @@ def render_review() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Next up — one leftover, three verbs
+# Next leftover — one pile, three verbs
 # --------------------------------------------------------------------------- #
-def _render_next_up(work, loaded, storage, config, client_id, table) -> None:
-    top = table.iloc[0]
-    idx = int(top["row"])
-    suggested = str(top.get("Suggested", "") or "").strip()
-    current = str(top.get("New Account", "") or "").strip()
-    code = current or suggested
-    why = str(top.get("Why", "") or "").strip() or "No confident match yet."
-    engine = str(top.get("Engine", "") or "").strip()
-    conf = float(top.get("Confidence", 0) or 0)
-    label = _row_label_from_series(top)
+def _render_inbox_card(work, loaded, storage, config, client_id, table) -> None:
+    groups = sh.group_review_summary(
+        work, loaded, high_cutoff=float(config.confidence.auto_apply_cutoff))
+    consensus = next((g for g in groups if not g["split"] and g["suggested"]),
+                     None)
 
     with st.container(border=True):
-        st.markdown("**Next up** — least sure first")
-        st.markdown(label or f"Row {idx + 1}")
-        meta = (
-            f"Suggested **{code or '—'}**"
-            + (f" · {engine}" if engine else "")
-            + f" · {conf:.0%} sure"
-        )
-        st.caption(meta)
-        st.caption(why)
+        st.markdown("**Next leftover**")
+        if consensus is not None:
+            st.markdown(
+                f"{consensus['rows']} look-alike row(s) → "
+                f"**{consensus['suggested']}**"
+                + (f" · {consensus['high_conf']} look solid"
+                   if consensus["high_conf"] else ""))
+            if consensus["sample"]:
+                st.caption(consensus["sample"])
+            k, f, n = st.columns(3)
+            if k.button(f"Keep as {consensus['suggested']}", type="primary",
+                        width="stretch", key="rev_inbox_keep",
+                        help="Accept this code for every blank row in the "
+                             "pile. Existing codes are never overwritten."):
+                common.push_undo()
+                out = sh.approve_similarity_group(
+                    work, loaded, storage, config, consensus["group_id"],
+                    client_id=client_id)
+                common.set_flash(
+                    f"Kept {out['approved']} row(s) as {out['code']}. "
+                    "Remembered for next time.")
+                _bump()
+                st.rerun()
+            fix_code = f.text_input(
+                "Fix to account", key="rev_inbox_fix_code",
+                placeholder="e.g. 6322", label_visibility="collapsed")
+            if f.button("Fix these", width="stretch", key="rev_inbox_fix",
+                        disabled=not str(fix_code or "").strip(),
+                        help="Write this account on the blank rows in the "
+                             "pile and remember it. Seeds stay protected."):
+                common.push_undo()
+                out = sh.recode_rows(
+                    work, loaded, storage, list(consensus["indices"]),
+                    fix_code, client_id=client_id)
+                msg = (f"Fixed {out['recoded']} row(s) to "
+                       f"{str(fix_code).strip()}.")
+                if out["skipped_protected"]:
+                    msg += f" Left {out['skipped_protected']} already-coded."
+                common.set_flash(msg)
+                _bump()
+                st.rerun()
+            if n.button("Not this", width="stretch", key="rev_inbox_not",
+                        help="Leave these blank and do not learn the "
+                             "suggestion — it will not be proposed again."):
+                common.push_undo()
+                out = sh.reject_rows(
+                    work, loaded, storage, list(consensus["indices"]),
+                    client_id=client_id)
+                common.set_flash(
+                    f"Not this — {out['rejected']} row(s) left blank, "
+                    "not remembered.")
+                _bump()
+                st.rerun()
+            return
 
-        a1, a2, a3 = st.columns([1.6, 1.4, 2.4])
-        approve_label = f"Looks right → {code}" if code else "Looks right"
-        if a1.button(approve_label, type="primary", width="stretch",
-                     key="rev_next_approve", disabled=not code,
-                     help="Write this code, protect it, and remember it "
-                          "for this client."):
+        # No consensus pile: decide the least-confident single row.
+        top = table.iloc[0]
+        idx = int(top["row"])
+        suggested = str(top.get("Suggested") or top.get("New Account") or "").strip()
+        label_bits = [str(top[c]).strip() for c in
+                      ("Name", "Payee", "Memo", "Description")
+                      if c in table.columns and str(top.get(c, "")).strip()]
+        st.markdown(
+            (" | ".join(label_bits)[:90] if label_bits else f"Row {idx + 1}")
+            + (f" → **{suggested}**" if suggested else " — no suggestion yet"))
+        why = str(top.get("Why") or "").strip()
+        if why:
+            st.caption(why)
+        k, f, n = st.columns(3)
+        if k.button(
+                f"Keep as {suggested}" if suggested else "Keep",
+                type="primary", width="stretch", key="rev_inbox_keep_row",
+                disabled=not suggested,
+                help="Accept the suggested code on this row and remember it."):
             common.push_undo()
-            out = sh.approve_rows(work, loaded, storage, config,
-                                  indices=[idx], client_id=client_id)
-            st.toast(f"Approved {out['applied']} · remembered {out['learned']}")
+            out = sh.apply_suggested_to_rows(
+                work, loaded, storage, [idx], client_id=client_id)
+            if out["applied"] == 0 and suggested:
+                out = sh.approve_rows(work, loaded, storage, config,
+                                      indices=[idx], client_id=client_id)
             common.set_flash(
-                f"Approved row {idx + 1} as {code} — remembered for next time.")
+                f"Kept row {idx + 1} as {suggested}. Remembered for next time.")
             _bump()
             st.rerun()
-
-        if a2.button("Not this", width="stretch", key="rev_next_reject",
-                     help="Leave blank and do not learn this pairing. "
-                          "The same suggestion will not come back."):
+        fix_code = f.text_input(
+            "Fix to account", key="rev_inbox_fix_row_code",
+            placeholder="e.g. 6322", label_visibility="collapsed")
+        if f.button("Fix this", width="stretch", key="rev_inbox_fix_row",
+                    disabled=not str(fix_code or "").strip()):
+            common.push_undo()
+            out = sh.recode_rows(work, loaded, storage, [idx], fix_code,
+                                 client_id=client_id)
+            common.set_flash(
+                f"Fixed row {idx + 1} to {str(fix_code).strip()}."
+                if out["recoded"] else
+                "That row already has a protected code — it was left alone.")
+            _bump()
+            st.rerun()
+        if n.button("Not this", width="stretch", key="rev_inbox_not_row",
+                    help="Leave this row blank and block the suggestion."):
             common.push_undo()
             out = sh.reject_rows(work, loaded, storage, [idx],
                                  client_id=client_id)
-            st.toast(f"Left blank · blocked {out['blocked']} pairing(s)")
             common.set_flash(
-                f"Rejected row {idx + 1} — left blank, not remembered.")
+                f"Not this — row {idx + 1} left blank, not remembered.")
             _bump()
-            st.rerun()
-
-        fix = a3.text_input(
-            "Fix to account", key="rev_next_fix",
-            placeholder="e.g. 6322",
-            label_visibility="collapsed")
-        f1, f2 = st.columns([1.4, 3])
-        if f1.button("Apply fix", width="stretch", key="rev_next_fix_btn",
-                     disabled=not str(fix).strip(),
-                     help="Code this leftover to the account you typed. "
-                          "Already-coded seeds are never overwritten."):
-            common.push_undo()
-            out = sh.recode_rows(work, loaded, storage, [idx], fix,
-                                 client_id=client_id)
-            msg = (f"Re-coded {out['recoded']} to {str(fix).strip()} · "
-                   f"remembered {out['learned']}.")
-            if out["skipped_protected"]:
-                msg += f" Skipped {out['skipped_protected']} protected."
-            st.toast(msg)
-            common.set_flash(msg)
-            _bump()
-            st.rerun()
-        if f2.button("Always code this vendor this way",
-                     width="stretch", key="rev_next_promote",
-                     disabled=not (code or str(fix).strip()),
-                     help="Turn this vendor into a reusable keyword rule "
-                          "from Name, then Memo — never Notes."):
-            chosen = str(fix).strip() or code
-            prefill = sh.rule_creation_prefill(
-                work, [idx], loaded,
-                rules_manager=services()[2], config=config)
-            if chosen:
-                prefill["code"] = chosen
-            rc.open_rule_panel(prefill)
             st.rerun()
 
 
 # --------------------------------------------------------------------------- #
-# Similarity groups — first-class one-click objects
+# Similarity groups — one-click Keep / Not this
 # --------------------------------------------------------------------------- #
 def _render_group_cards(work, loaded, storage, config, client_id) -> None:
     groups = sh.group_review_summary(
@@ -186,16 +218,17 @@ def _render_group_cards(work, loaded, storage, config, client_id) -> None:
     if not groups:
         return
 
-    st.subheader(f"Same-looking piles ({len(groups)})")
-    st.caption("Look-alike transactions cluster together. When the whole pile "
-               "points at one code, approve it in one click. Split piles are "
-               "never one-click approved — pick the code on Next up or below.")
+    st.subheader(f"Look-alike piles ({len(groups)})")
+    st.caption("Same-looking transactions stay together. Keep the pile when "
+               "the code is right. Not this leaves them blank and will not "
+               "learn the suggestion. Split piles need a row-by-row pick.")
     for g in groups[:15]:
         with st.container(border=True):
-            c1, c2, c3 = st.columns([3.6, 1.6, 1.4])
-            title = (f"**Pile #{g['group_id']}** · {g['rows']} row(s) · "
-                     f"suggested **{g['suggested'] or '—'}** · "
-                     f"{g['high_conf']} high confidence")
+            c1, c2, c3 = st.columns([3.4, 1.5, 1.3])
+            title = (f"**{g['rows']} rows** · suggested "
+                     f"**{g['suggested'] or '—'}**"
+                     + (f" · {g['high_conf']} look solid"
+                        if g["high_conf"] else ""))
             c1.markdown(title)
             if g["sample"]:
                 c1.caption(g["sample"])
@@ -205,235 +238,243 @@ def _render_group_cards(work, loaded, storage, config, client_id) -> None:
                 c2.button(f"Split: {split_txt}", width="stretch",
                           key=f"rev_group_split_{g['group_id']}",
                           disabled=True,
-                          help="This pile's rows suggest different codes. "
-                               "Decide them one at a time.")
+                          help="This pile suggests different codes. Decide "
+                               "them in the table below.")
                 c3.button("Not this pile", width="stretch",
-                          key=f"rev_group_reject_disabled_{g['group_id']}",
-                          disabled=True,
-                          help="Split piles stay in the list so you can "
-                               "pick the right code per row.")
+                          key=f"rev_group_not_disabled_{g['group_id']}",
+                          disabled=True)
             else:
                 if c2.button(
-                        f"Looks right → {g['suggested']}",
+                        f"Keep as {g['suggested']}",
                         type="primary", width="stretch",
                         key=f"rev_group_approve_{g['group_id']}",
                         help="Fill every blank row in this pile with the "
-                             "suggested code and remember them. Existing "
-                             "codes are never overwritten."):
+                             "suggested code and remember it. Existing codes "
+                             "are never overwritten."):
                     common.push_undo()
                     out = sh.approve_similarity_group(
                         work, loaded, storage, config, g["group_id"],
                         client_id=client_id)
-                    n = int(out["approved"])
-                    st.toast(f"Approved {n} · remembered {n}")
                     common.set_flash(
-                        f"Pile #{g['group_id']}: approved {n} row(s) at "
-                        f"{out['code']} — remembered for next time.")
+                        f"Kept {out['approved']} row(s) as {out['code']}. "
+                        "Remembered for next time.")
                     _bump()
                     st.rerun()
                 if c3.button(
-                        "Not this pile",
-                        width="stretch",
-                        key=f"rev_group_reject_{g['group_id']}",
-                        help="Leave these leftovers blank and block the "
-                             "suggested pairing so it does not come back."):
+                        "Not this", width="stretch",
+                        key=f"rev_group_not_{g['group_id']}",
+                        help="Leave this pile blank and block the pairing."):
                     common.push_undo()
-                    indices = list(g.get("indices") or [])
-                    out = sh.reject_rows(work, loaded, storage, indices,
-                                         client_id=client_id)
-                    st.toast(
-                        f"Left {out['rejected']} blank · "
-                        f"blocked {out['blocked']}")
+                    out = sh.reject_rows(
+                        work, loaded, storage, list(g["indices"]),
+                        client_id=client_id)
                     common.set_flash(
-                        f"Pile #{g['group_id']}: rejected {out['rejected']} "
-                        f"row(s) — left blank, not remembered.")
+                        f"Not this — {out['rejected']} row(s) left blank, "
+                        "not remembered.")
                     _bump()
                     st.rerun()
 
 
 # --------------------------------------------------------------------------- #
-# Bulk action bar — Review-page rows only (never spreadsheet ticks)
+# Decide bar — actions use THIS page's Pick ticks, not the spreadsheet
 # --------------------------------------------------------------------------- #
-def _render_bulk_bar(work, loaded, storage, config, client_id, table) -> None:
+def _render_decide_bar(work, loaded, storage, config, client_id, table) -> None:
     visible = [int(r) for r in table["row"].tolist()]
-    cutoff = float(config.confidence.auto_apply_cutoff)
-    confident = [int(r) for r in table.loc[
-        table["Confidence"].astype(float) >= cutoff, "row"].tolist()]
-    with_code = []
-    for _, row in table.iterrows():
-        if str(row.get("New Account", "") or "").strip() or str(
-                row.get("Suggested", "") or "").strip():
-            with_code.append(int(row["row"]))
+    picked = _picked_indices(table)
 
     with st.container(border=True):
-        st.markdown("**Quick actions** — these use the leftovers on this page, "
-                    "not ticks on the spreadsheet.")
-        b1, b2, b3 = st.columns([1.8, 2.0, 1.6])
+        st.markdown("**Decide several at once** — ticks live on this page. "
+                    "Existing codes are never overwritten.")
+        b1, b2, b3 = st.columns([1.8, 1.8, 1.8])
 
-        if b1.button(f"Looks right on all leftovers ({len(with_code):,})",
+        if b1.button(f"Keep all leftovers ({len(visible):,})",
                      width="stretch", key="rev_approve_visible",
-                     disabled=not with_code,
-                     help="Approve every leftover that already has a "
-                          "suggested or typed code."):
+                     help="Keep the suggested code on every leftover in this "
+                          "list."):
             common.push_undo()
             out = sh.approve_rows(work, loaded, storage, config,
-                                  indices=with_code, client_id=client_id)
-            st.toast(f"Approved {out['applied']} · remembered {out['learned']}")
+                                  indices=visible, client_id=client_id)
+            common.set_flash(
+                f"Kept {out['applied']} · remembered {out['learned']}.")
             _bump()
             st.rerun()
 
+        high_cut = float(config.confidence.auto_apply_cutoff)
+        confident = [int(r) for r in table.loc[
+            table["Confidence"].astype(float) >= high_cut, "row"].tolist()]
         if b2.button(
-                f"Looks right on high-confidence ({len(confident):,} ≥ "
-                f"{cutoff:.0%})",
+                f"Keep the solid ones ({len(confident):,})",
                 width="stretch", key="rev_approve_conf",
                 disabled=not confident,
-                help="Approve leftovers at or above the auto-fill cutoff."):
+                help=f"Keep leftovers at or above {high_cut:.0%} confidence."):
             common.push_undo()
             out = sh.approve_rows(work, loaded, storage, config,
                                   indices=confident, client_id=client_id)
-            st.toast(f"Approved {out['applied']} · remembered {out['learned']}")
+            common.set_flash(
+                f"Kept {out['applied']} · remembered {out['learned']}.")
             _bump()
             st.rerun()
 
-        if b3.button(f"Not this — all leftovers ({len(visible):,})",
-                     width="stretch", key="rev_reject_visible",
-                     help="Leave every leftover on this page blank and do "
-                          "not remember the suggestions."):
+        if b3.button(f"Not this on picked ({len(picked):,})",
+                     width="stretch", key="rev_reject_picked",
+                     disabled=not picked,
+                     help="Leave picked rows blank and do not remember the "
+                          "suggestion. Tick Pick in the table first."):
             common.push_undo()
-            out = sh.reject_rows(work, loaded, storage, visible,
+            out = sh.reject_rows(work, loaded, storage, picked,
                                  client_id=client_id)
-            st.toast(
-                f"Left {out['rejected']} blank · blocked {out['blocked']}")
             common.set_flash(
-                f"Rejected {out['rejected']} leftover(s) — left blank, "
+                f"Not this — {out['rejected']} row(s) left blank, "
                 "not remembered.")
             _bump()
             st.rerun()
 
-        with st.expander("More options", expanded=False):
-            st.toggle(
-                "Also show rows with no suggestion at all",
-                value=include_no_match_value(),
-                key="review_include_no_match",
-                help="No-suggestion rows have no proposed code — include "
-                     "them to code everything from this screen.")
-            r1, r2 = st.columns([2, 1.6])
+        with st.expander("Fix picked rows to a different account"):
+            r1, r2 = st.columns([2.2, 1.6])
             recode_val = r1.text_input(
-                "Fix leftovers to account", key="rev_recode_code",
+                "Account code", key="rev_recode_code",
                 placeholder="e.g. 6322")
-            if r2.button(f"Apply fix to {len(visible):,} leftovers",
+            if r2.button(f"Fix {len(picked):,} picked row(s)",
                          width="stretch", key="rev_recode_apply",
-                         disabled=not recode_val.strip()):
+                         disabled=not (picked and str(recode_val).strip())):
                 common.push_undo()
-                out = sh.recode_rows(work, loaded, storage, visible,
-                                     recode_val, client_id=client_id)
-                msg = (f"Re-coded {out['recoded']} · remembered "
+                out = sh.recode_rows(work, loaded, storage, picked, recode_val,
+                                     client_id=client_id)
+                msg = (f"Fixed {out['recoded']} row(s) to "
+                       f"{str(recode_val).strip()} · remembered "
                        f"{out['learned']}.")
                 if out["skipped_protected"]:
-                    msg += (f" Skipped {out['skipped_protected']} already-"
-                            "coded (protected).")
-                st.toast(msg)
+                    msg += (f" Left {out['skipped_protected']} already-coded "
+                            "row(s) alone.")
                 common.set_flash(msg)
                 _bump()
                 st.rerun()
 
 
-def include_no_match_value() -> bool:
-    return bool(st.session_state.get("review_include_no_match", False))
-
-
 # --------------------------------------------------------------------------- #
-# The editable review table (batched decisions, one Save click)
+# Editable table — Pick / Keep / account, one Apply
 # --------------------------------------------------------------------------- #
 def _render_review_table(work, loaded, storage, config, client_id,
                          table) -> None:
-    st.subheader(f"All leftovers ({len(table):,})")
+    st.subheader(f"Leftovers ({len(table):,})")
     st.caption(
-        "Least sure first. Tick **Looks right**, correct the account if "
-        "needed, then click **Save my decisions** once. Saving writes the "
-        "code, protects it, and teaches the tool.")
+        "Least sure first. Tick **Keep** on rows that look right (or type a "
+        "better **Account**), tick **Pick** for Not this / Fix above, then "
+        "**Apply keeps**. One click writes the codes and remembers them.")
 
-    keep = [c for c in table.columns if c not in
-            ("row", "Current", "Engine", "Action")]
-    display = table[keep]
-    # Accountant labels on the tick column.
-    display = display.rename(columns={"Approve": "Looks right"})
+    display = table.drop(columns=[c for c in
+                                  ("row", "Current", "Engine", "Action")
+                                  if c in table.columns]).copy()
+    display.insert(0, "Pick", False)
+    if "Approve" in display.columns:
+        display = display.rename(columns={"Approve": "Keep",
+                                          "New Account": "Account"})
+    elif "New Account" in display.columns:
+        display = display.rename(columns={"New Account": "Account"})
+        display["Keep"] = False
+
+    # Preferred column order for an accountant, not an engineer.
+    preferred = ["Pick", "Keep", "Account", "Suggested", "Confidence", "Why"]
+    rest = [c for c in display.columns if c not in preferred]
+    display = display[[c for c in preferred if c in display.columns] + rest]
 
     edited = st.data_editor(
         display, width="stretch", hide_index=True, key="review_table_editor",
         height=min(600, 80 + 35 * len(display)),
         column_config={
-            "Looks right": st.column_config.CheckboxColumn(
-                "Looks right", width="small"),
-            "New Account": st.column_config.TextColumn(
-                "Account", help="The code to apply when you save."),
+            "Pick": st.column_config.CheckboxColumn(
+                "Pick", width="small",
+                help="Mark rows for Not this or Fix above."),
+            "Keep": st.column_config.CheckboxColumn(
+                "Keep", width="small",
+                help="Accept the Account on this row."),
+            "Account": st.column_config.TextColumn(
+                "Account", help="The code to write when you Apply keeps."),
             "Confidence": st.column_config.ProgressColumn(
                 "Confidence", min_value=0.0, max_value=1.0, format="%.0f%%"),
             "Why": st.column_config.TextColumn("Why", width="large"),
         },
         disabled=[c for c in display.columns
-                  if c not in ("Looks right", "New Account")],
+                  if c not in ("Pick", "Keep", "Account")],
     )
 
+    # Persist Pick ticks so the decide bar above can read them next rerun.
+    _store_picks(table, edited)
+
     a1, a2, a3 = st.columns([1.8, 1.8, 3])
-    n_approved = int(edited["Looks right"].astype(bool).sum()) \
-        if "Looks right" in edited.columns else 0
-    if a1.button(f"Save my decisions ({n_approved:,})", type="primary",
+    n_keep = int(edited["Keep"].astype(bool).sum()) if "Keep" in edited.columns else 0
+    if a1.button(f"Apply keeps ({n_keep:,})", type="primary",
                  width="stretch", key="rev_apply_table",
-                 disabled=n_approved == 0,
-                 help="Write the ticked codes, protect them, and remember "
+                 disabled=n_keep == 0,
+                 help="Write the kept accounts, protect them, and remember "
                       "them. Unticked rows are left alone."):
         common.push_undo()
-        merged = edited.rename(columns={"Looks right": "Approve"}).copy()
+        merged = edited.rename(columns={"Keep": "Approve",
+                                        "Account": "New Account"}).copy()
         merged["row"] = table["row"].to_numpy()
         out = sh.apply_review_table(work, loaded, storage, merged,
                                     client_id=client_id)
-        st.toast(f"Saved {out['applied']} · remembered {out['learned']}")
         common.set_flash(
-            f"Review saved: {out['applied']} code(s) written, "
-            f"{out['learned']} remembered"
-            + (f", {out['cleared']} cleared" if out["cleared"] else "") + ".")
+            f"Kept {out['applied']} · remembered {out['learned']}"
+            + (f" · cleared {out['cleared']}" if out.get("cleared") else "")
+            + ".")
         _bump()
         st.rerun()
 
     options = {
         int(r): f"row {int(r) + 1} — {lbl}"
         for r, lbl in zip(table["row"], _row_labels(table))}
-    pick = a2.selectbox("Always code this vendor…", [None] + list(options),
+    pick = a2.selectbox("Turn a leftover into a reusable rule", [None] + list(options),
                         key="rev_promote_pick", format_func=lambda v:
                         "Always code this vendor…" if v is None else options[v],
                         label_visibility="collapsed")
-    if a3.button("Turn into a rule", width="stretch", key="rev_promote_btn",
+    if a3.button("Always code this vendor", width="stretch",
+                 key="rev_promote_btn",
                  disabled=pick is None,
-                 help="Reusable keyword rule, pre-filled from Name, then Memo."):
+                 help="Turn this row into a keyword rule, pre-filled from "
+                      "Name then Memo — never Notes."):
         row_idx = int(pick)
         code = str(work.at[row_idx, loaded.new_account_col] or "").strip() \
             or str(work.at[row_idx, sh.SUGGESTED_COL] or "").strip()
         prefill = sh.rule_creation_prefill(work, [row_idx], loaded,
-                                           rules_manager=services()[2],
-                                           config=config)
+                                           rules_manager=rules, config=config)
         if code:
             prefill["code"] = code
         rc.open_rule_panel(prefill)
         st.rerun()
 
 
+def _store_picks(table, edited) -> None:
+    """Remember which leftover rows are Picked so the decide bar can use them."""
+    if edited is None or edited.empty or "Pick" not in edited.columns:
+        st.session_state["review_picked_idx"] = []
+        return
+    flags = edited["Pick"].astype(bool).tolist()
+    rows = table["row"].tolist()
+    st.session_state["review_picked_idx"] = [
+        int(r) for r, flag in zip(rows, flags) if flag]
+
+
+def _picked_indices(table) -> list:
+    """Leftover row indices ticked Pick on this page (not the spreadsheet)."""
+    stored = st.session_state.get("review_picked_idx") or []
+    visible = set(int(r) for r in table["row"].tolist())
+    return [i for i in stored if i in visible]
+
+
 def _row_labels(table) -> list:
+    """Short human labels for rows in the review table."""
+    text_cols = [c for c in ("Name", "Payee", "Memo", "Description")
+                 if c in table.columns]
     labels = []
     for _, row in table.iterrows():
-        labels.append(_row_label_from_series(row))
+        parts = [str(row[c]).strip() for c in text_cols
+                 if str(row[c]).strip()]
+        sug = str(row.get("Suggested", "")).strip()
+        labels.append(" | ".join(parts)[:60] + (f" → {sug}" if sug else ""))
     return labels
-
-
-def _row_label_from_series(row) -> str:
-    text_cols = [c for c in ("Name", "Payee", "Vendor", "Memo", "Description",
-                             "Amount", "Date")
-                 if c in getattr(row, "index", [])]
-    parts = [str(row[c]).strip() for c in text_cols if str(row[c]).strip()]
-    sug = str(row["Suggested"]).strip() if "Suggested" in getattr(
-        row, "index", []) else ""
-    return " | ".join(parts)[:80] + (f" → {sug}" if sug else "")
 
 
 def _bump() -> None:
     st.session_state["data_version"] = st.session_state.get("data_version", 0) + 1
+    st.session_state["review_picked_idx"] = []
