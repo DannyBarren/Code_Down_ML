@@ -202,6 +202,80 @@ def test_storage_enables_wal(tmp_path):
     assert str(mode).lower() == "wal"
 
 
+# --------------------------------------------------------------------------- #
+# Row cap — live refuses, never silently truncates the book
+# --------------------------------------------------------------------------- #
+def test_live_row_cap_refuses_instead_of_truncating(monkeypatch):
+    monkeypatch.setenv("FILLDOWN_LIVE", "1")
+    monkeypatch.setenv("FILLDOWN_MAX_ROWS", "50")
+    msg = common.row_cap_refusal(60)
+    assert msg, "live must refuse an oversized upload"
+    low = msg.lower()
+    assert "60" in msg and "50" in msg
+    assert "nothing was loaded" in low
+    assert "add another export" in low
+
+
+def test_live_row_cap_allows_a_file_that_fits(monkeypatch):
+    monkeypatch.setenv("FILLDOWN_LIVE", "1")
+    monkeypatch.setenv("FILLDOWN_MAX_ROWS", "50")
+    assert common.row_cap_refusal(50) is None
+    assert common.row_cap_refusal(1) is None
+
+
+def test_no_cap_configured_never_refuses(monkeypatch):
+    monkeypatch.setenv("FILLDOWN_LIVE", "1")
+    monkeypatch.delenv("FILLDOWN_MAX_ROWS", raising=False)
+    assert common.row_cap_refusal(10_000_000) is None
+
+
+def test_demo_and_local_still_truncate_rather_than_refuse(monkeypatch):
+    """The public demo previews a big file; only live refuses."""
+    monkeypatch.setenv("FILLDOWN_MAX_ROWS", "50")
+    monkeypatch.setenv("FILLDOWN_DEMO", "1")
+    assert common.row_cap_refusal(60) is None
+    monkeypatch.delenv("FILLDOWN_DEMO", raising=False)
+    assert common.row_cap_refusal(60) is None
+
+
+# --------------------------------------------------------------------------- #
+# Durable client name drives every client-scoped write
+# --------------------------------------------------------------------------- #
+def test_client_scope_survives_a_dropped_landing_widget(monkeypatch):
+    """Navigation can drop ``client_name``; memory must stay client-scoped.
+
+    If ``current_client_id()`` ever returned None here, a run would write
+    learned mappings into the shared scope and the client's memory would
+    look lost.
+    """
+    class _Stub:
+        session_state = {"_live_client_name": NORTHWIND}
+
+    monkeypatch.setattr(common, "st", _Stub)
+    assert common.current_client_id() == NORTHWIND
+    assert common.remember_client_name() == NORTHWIND
+
+
+def test_client_scope_prefers_the_typed_name_and_backfills_durable(monkeypatch):
+    class _Stub:
+        session_state = {"client_name": "Second Client",
+                         "_live_client_name": NORTHWIND}
+
+    monkeypatch.setattr(common, "st", _Stub)
+    assert common.current_client_id() == "Second Client"
+    # Switching clients must move the durable copy too, or Save would write
+    # the previous client's session folder.
+    assert _Stub.session_state["_live_client_name"] == "Second Client"
+
+
+def test_no_client_name_is_the_shared_scope(monkeypatch):
+    class _Stub:
+        session_state = {}
+
+    monkeypatch.setattr(common, "st", _Stub)
+    assert common.current_client_id() is None
+
+
 def test_session_bytes_survive_excel_like_payload(monkeypatch, tmp_path):
     monkeypatch.setenv("FILLDOWN_LIVE", "1")
     buf = io.BytesIO()
