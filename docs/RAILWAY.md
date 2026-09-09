@@ -105,14 +105,17 @@ After the service is up:
 4. Confirm the source-profile chip: `Read as AppFolio…` / `Read as QuickBooks…`
    / `Generic export`.
 5. Click **Run Rules — Strict ★ (recommended)**.
-6. Approve one row in **Review**.
+6. Open **Review** and decide one leftover. Strict makes no suggestions, so
+   the queue is blank rows: type an account and click **Fix**. (After a run
+   that does suggest — Rules + Memory, Similarity, Full — the same card
+   offers **Keep** and **Not this**.)
 7. Optionally **Add another export** (a second small file).
 8. Open **Insights** — cards render from the coded book.
 9. **Restart** the Railway service.
 10. Log in again. Type the same client name → **Resume last workspace**.
 11. Confirm:
     - the workbook is back (filename + row count flash)
-    - the approved code is still there
+    - the code you kept / fixed is still there
     - rules / learned memory survived
     - Insights still render
     - **Add another export** still works

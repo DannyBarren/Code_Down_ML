@@ -264,14 +264,44 @@ def make_hybrid_engine() -> FillDownEngine:
     )
 
 
+class RowCapExceeded(RuntimeError):
+    """Upload is larger than ``FILLDOWN_MAX_ROWS`` on a hosted instance.
+
+    Live must never silently truncate: the accountant would export a short
+    book and lose the tail of the month without being told.
+    """
+
+
+def row_cap_refusal(n_rows: int) -> Optional[str]:
+    """Accountant-readable refusal when a live upload is over the row cap.
+
+    ``None`` means the file is allowed (it fits, there is no cap, or this is
+    a demo/local run where truncating to a preview is the documented
+    behaviour). Live never truncates — a short book is silent data loss.
+    """
+    cap = demo_max_rows()
+    if not cap or n_rows <= cap or not live_mode():
+        return None
+    return (
+        f"This file has {n_rows:,} rows and this instance is capped at "
+        f"{cap:,}. Nothing was loaded, so no transactions were dropped. "
+        "Split the export into smaller periods and use Add another export "
+        "to build the month up, or ask your admin to raise FILLDOWN_MAX_ROWS.")
+
+
 def load_into_session(raw: bytes, name: str, ext: str, sheet=0) -> None:
     """Load a file, build the authoritative work_df and reset run state."""
     config, storage, *_ = services()
     loaded = load_dataframe(raw, config, source_name=name, sheet_name=sheet)
     cap = demo_max_rows()
     if cap and len(loaded.df) > cap:
+        refusal = row_cap_refusal(len(loaded.df))
+        if refusal:
+            raise RowCapExceeded(refusal)
         loaded.df = loaded.df.head(cap).reset_index(drop=True)
-        set_flash(f"Demo limit: showing the first {cap:,} rows of this file.")
+        limit_label = "Demo limit" if demo_mode() else "Row cap"
+        set_flash(f"{limit_label}: loaded the first {cap:,} rows of this file. "
+                  "Only these rows will export.")
     st.session_state["loaded"] = loaded
     st.session_state["work_df"] = sh.build_work_df(loaded, storage, config)
     st.session_state["original_bytes"] = raw

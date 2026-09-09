@@ -228,7 +228,7 @@ def _confirm_dialog(work, loaded, config, rules, storage) -> None:
 
     elif kind == "start_fresh":
         if common.live_mode():
-            client = (st.session_state.get("client_name") or "").strip()
+            client = (common.current_client_id() or "").strip()
             st.warning(
                 "**Start fresh** on this hosted instance deletes this "
                 "client's *saved workspace files* and unloads the file. "
@@ -595,7 +595,7 @@ def _engine_status_text() -> str:
 
 def _render_header(loaded, counts: dict) -> None:
     """Compact, single-strip header so the grid owns the viewport."""
-    client = st.session_state.get("client_name") or ""
+    client = common.current_client_id() or ""
     title = "Spreadsheet" + (f" — {client}" if client else "")
     head = st.columns([3.2, 2.8])
     head[0].markdown(f"### {title}")
@@ -1000,7 +1000,7 @@ def _code_suggestions(work, na_col) -> list:
 
 def _commit_with_undo(work, edited, loaded, storage, config, rules) -> None:
     pre = sh.snapshot(work)
-    client_id = st.session_state.get("client_name") or None
+    client_id = common.current_client_id()
     counts = sh.commit_editor_changes(work, edited, loaded, storage, config,
                                       client_id=client_id)
     if counts.get("targets") or counts.get("notes"):
@@ -1088,7 +1088,7 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
         common.push_undo()
         sel = sh.selected_indices(work)
         indices = sel if sel else None
-        client_id = st.session_state.get("client_name") or None
+        client_id = common.current_client_id()
         n, results = sh.run_selected_rules_audited(
             work, rules, loaded, config, indices=indices, client_id=client_id)
         audit = sh.pure_rule_audit(results, config)
@@ -1124,7 +1124,7 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
     # Rules + Memory — strict rules, then exact matches approved before.
     # Deterministic (no similarity, no AI), blank-only, fully audited.
     if actions.get("run_memory"):
-        client_id = st.session_state.get("client_name") or None
+        client_id = common.current_client_id()
         if not rules.list_rules(enabled_only=True) \
                 and not storage.get_learned_lookup(client_id=client_id):
             common.set_flash(
@@ -1161,7 +1161,7 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
         common.push_undo()
         sel = sh.selected_indices(work)
         indices = sel if sel else None
-        client_id = st.session_state.get("client_name") or None
+        client_id = common.current_client_id()
         progress = st.progress(0.0, text="Applying rules…")
 
         def hybrid_cb(frac, msg):
@@ -1215,7 +1215,7 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
     # Approve selected.
     if actions.get("approve"):
         common.push_undo()
-        client_id = st.session_state.get("client_name") or None
+        client_id = common.current_client_id()
         out = sh.approve_rows(work, loaded, storage, config,
                               client_id=client_id)
         _bump()
@@ -1247,7 +1247,7 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
 # --------------------------------------------------------------------------- #
 def _record_run(result, storage) -> None:
     try:
-        client = st.session_state.get("client_name") or ""
+        client = common.current_client_id() or ""
         if client:
             result.summary.file_name = f"{client}: {result.summary.file_name}"
         storage.add_run(result.summary)
@@ -1286,7 +1286,7 @@ def _export_dialog(work, loaded, counts: dict) -> None:
     import re as _re
     from datetime import datetime as _dt
     client_slug = _re.sub(r"[^A-Za-z0-9]+", "_",
-                          st.session_state.get("client_name") or "").strip("_")
+                          common.current_client_id() or "").strip("_")
     date_slug = _dt.now().strftime("%Y%m%d")
     prefix = "_".join(p for p in (client_slug, stem, date_slug) if p)
 

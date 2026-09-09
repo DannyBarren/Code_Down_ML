@@ -174,7 +174,7 @@ def render_memory_bootstrap_banner(work, loaded, rules_manager, storage,
     if engines - {"", "seed"}:
         return
 
-    client_id = st.session_state.get("client_name") or None
+    client_id = common.current_client_id()
     n_rules = len(rules_manager.list_rules(enabled_only=True,
                                            client_id=client_id))
     n_memory = len(storage.list_learned_mappings(client_id=client_id))
@@ -240,7 +240,7 @@ def render_ingest_banner(work, loaded, rules_manager, storage, config) -> None:
                  help="Creates one high-priority exact-match rule per coded "
                       "row, keyed on Name, then Memo, then Description. "
                       "Review them anytime in the Rules panel."):
-        client_id = st.session_state.get("client_name") or None
+        client_id = common.current_client_id()
         source_cols = sh.mining_columns(work, loaded, config)
         created = rules_manager.ingest_existing_new_account_as_rules(
             work, client_id=client_id, source_text_cols=source_cols)

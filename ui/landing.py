@@ -139,6 +139,8 @@ def render_landing() -> None:
                     st.session_state["view"] = "spreadsheet"
                     st.session_state["panel"] = None
                     st.rerun()
+                except common.RowCapExceeded as exc:
+                    st.error(str(exc))
                 except DataLoadError as exc:
                     st.error(f"Could not read that file: {exc}")
                 except Exception as exc:  # noqa: BLE001
