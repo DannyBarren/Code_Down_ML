@@ -21,6 +21,8 @@ from ui import common
 from ui import rule_creation as rc
 from ui.common import services
 
+_MAX_EDITOR_ROWS = 40
+
 
 def render_review() -> None:
     config, storage, rules, mm, logger = services()
@@ -68,11 +70,30 @@ def render_review() -> None:
     _render_inbox_card(work, loaded, storage, config, client_id, leftover)
     _render_group_cards(work, loaded, storage, config, client_id,
                         skip_group_id=skip_gid)
-    edited = _render_review_table(work, loaded, table)
-    _render_decide_bar(work, loaded, storage, config, client_id, table,
-                       edited)
-    _render_apply_and_promote(work, loaded, storage, config, client_id,
-                              rules, table, edited)
+
+    # A 60–200 row data_editor makes Keep / Fix / Not this feel stuck after
+    # Strict. Next leftover is the accountant path; the table is optional.
+    st.session_state.setdefault("review_show_leftover_table", len(table) <= 20)
+    show_table = True
+    if len(table) > 20:
+        show_table = st.toggle(
+            f"Show leftover table ({len(table):,})",
+            key="review_show_leftover_table",
+            help="Tick Keep or Pick on many rows at once. Leave this off so "
+                 "Next leftover stays fast.")
+    if show_table:
+        visible = table.head(_MAX_EDITOR_ROWS)
+        if len(table) > _MAX_EDITOR_ROWS:
+            st.caption(
+                f"Showing the {_MAX_EDITOR_ROWS} least-sure of "
+                f"{len(table):,}. Use Next leftover for the rest.")
+        edited = _render_review_table(work, loaded, visible)
+        _render_decide_bar(work, loaded, storage, config, client_id, visible,
+                           edited)
+        _render_apply_and_promote(work, loaded, storage, config, client_id,
+                                  rules, visible, edited)
+    else:
+        _render_promote_only(work, loaded, rules, config, table)
 
     if st.session_state.get("rule_panel_open"):
         rc.rule_creation_dialog(work, loaded, config, rules, storage)
@@ -413,15 +434,38 @@ def _render_apply_and_promote(work, loaded, storage, config, client_id,
                  disabled=pick is None,
                  help="Turn this row into a keyword rule, pre-filled from "
                       "Name then Memo — never Notes."):
-        row_idx = int(pick)
-        code = str(work.at[row_idx, loaded.new_account_col] or "").strip() \
-            or str(work.at[row_idx, sh.SUGGESTED_COL] or "").strip()
-        prefill = sh.rule_creation_prefill(work, [row_idx], loaded,
-                                           rules_manager=rules, config=config)
-        if code:
-            prefill["code"] = code
-        rc.open_rule_panel(prefill)
-        st.rerun()
+        _open_vendor_rule(work, loaded, rules, config, int(pick))
+
+
+def _render_promote_only(work, loaded, rules, config, table) -> None:
+    """Rule promote without the leftover grid (keeps Next leftover snappy)."""
+    options = {
+        int(r): f"row {int(r) + 1} — {lbl}"
+        for r, lbl in zip(table["row"], _row_labels(table))}
+    c1, c2 = st.columns([2.2, 3])
+    pick = c1.selectbox(
+        "Turn a leftover into a reusable rule", [None] + list(options),
+        key="rev_promote_pick",
+        format_func=lambda v:
+        "Always code this vendor…" if v is None else options[v],
+        label_visibility="collapsed")
+    if c2.button("Always code this vendor", width="stretch",
+                 key="rev_promote_btn",
+                 disabled=pick is None,
+                 help="Turn this row into a keyword rule, pre-filled from "
+                      "Name then Memo — never Notes."):
+        _open_vendor_rule(work, loaded, rules, config, int(pick))
+
+
+def _open_vendor_rule(work, loaded, rules, config, row_idx: int) -> None:
+    code = str(work.at[row_idx, loaded.new_account_col] or "").strip() \
+        or str(work.at[row_idx, sh.SUGGESTED_COL] or "").strip()
+    prefill = sh.rule_creation_prefill(work, [row_idx], loaded,
+                                       rules_manager=rules, config=config)
+    if code:
+        prefill["code"] = code
+    rc.open_rule_panel(prefill)
+    st.rerun()
 
 
 def _row_labels(table) -> list:
