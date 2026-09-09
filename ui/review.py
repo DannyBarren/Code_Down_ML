@@ -67,6 +67,10 @@ def render_review() -> None:
     skip_gid = (leftover["group"]["group_id"]
                 if leftover and leftover["kind"] == "group" else None)
 
+    toast = st.session_state.pop("review_toast", None)
+    if toast:
+        st.toast(toast)
+
     _render_inbox_card(work, loaded, storage, config, client_id, leftover)
     _render_group_cards(work, loaded, storage, config, client_id,
                         skip_group_id=skip_gid)
@@ -156,23 +160,28 @@ def _render_inbox_group(work, loaded, storage, config, client_id, g) -> None:
             client_id=client_id)
         _done(f"Kept {out['approved']} row(s) as {out['code']}. "
               "Remembered for next time.")
-    fix_code = f.text_input(
-        "Fix to account", key="rev_inbox_fix_code",
-        placeholder="e.g. 6322", label_visibility="collapsed")
-    if f.button("Fix", width="stretch", key="rev_inbox_fix",
-                disabled=not str(fix_code or "").strip(),
-                help="Write this account on the blank rows in the pile and "
-                     "remember it. Seeds stay protected."):
-        common.push_undo()
-        out = sh.recode_rows(
-            work, loaded, storage, list(g["indices"]),
-            fix_code, client_id=client_id)
-        msg = f"Fixed {out['recoded']} row(s) to {str(fix_code).strip()}."
-        if out["skipped_protected"]:
-            msg += f" Left {out['skipped_protected']} already-coded."
-        if out["recoded"]:
-            msg += " Remembered for next time."
-        _done(msg)
+    with f.form("rev_inbox_fix_form"):
+        fix_code = st.text_input(
+            "Fix to account", placeholder="e.g. 6322",
+            label_visibility="collapsed")
+        if st.form_submit_button("Fix", width="stretch",
+                                 help="Write this account on the blank rows "
+                                      "in the pile and remember it. Seeds "
+                                      "stay protected."):
+            if not str(fix_code or "").strip():
+                st.warning("Type an account first.")
+            else:
+                common.push_undo()
+                out = sh.recode_rows(
+                    work, loaded, storage, list(g["indices"]),
+                    fix_code, client_id=client_id)
+                msg = (f"Fixed {out['recoded']} row(s) to "
+                       f"{str(fix_code).strip()}.")
+                if out["skipped_protected"]:
+                    msg += f" Left {out['skipped_protected']} already-coded."
+                if out["recoded"]:
+                    msg += " Remembered for next time."
+                _done(msg)
     if n.button("Not this", width="stretch", key="rev_inbox_not",
                 help="Leave these blank and do not remember the suggestion."):
         common.push_undo()
@@ -192,7 +201,8 @@ def _render_inbox_row(work, loaded, storage, config, client_id,
                   ("Name", "Payee", "Memo", "Description")
                   if c in rec.index and str(rec.get(c, "")).strip()]
     st.markdown(
-        (" | ".join(label_bits)[:90] if label_bits else f"Row {idx + 1}")
+        f"Row {idx + 1} · "
+        + (" | ".join(label_bits)[:90] if label_bits else "leftover")
         + (f" → **{suggested}**" if suggested else " — no suggestion yet"))
     why = str(rec.get("Why") or "").strip()
     if why:
@@ -210,19 +220,23 @@ def _render_inbox_row(work, loaded, storage, config, client_id,
             out = sh.approve_rows(work, loaded, storage, config,
                                   indices=[idx], client_id=client_id)
         _done(f"Kept row {idx + 1} as {suggested}. Remembered for next time.")
-    fix_code = f.text_input(
-        "Fix to account", key="rev_inbox_fix_row_code",
-        placeholder="e.g. 6322", label_visibility="collapsed")
-    if f.button("Fix", width="stretch", key="rev_inbox_fix_row",
-                disabled=not str(fix_code or "").strip()):
-        common.push_undo()
-        out = sh.recode_rows(work, loaded, storage, [idx], fix_code,
-                             client_id=client_id)
-        if out["recoded"]:
-            _done(f"Fixed row {idx + 1} to {str(fix_code).strip()}. "
-                  "Remembered for next time.")
-        else:
-            _done("That row already has a protected code — it was left alone.")
+    with f.form("rev_inbox_fix_row_form"):
+        fix_code = st.text_input(
+            "Fix to account", placeholder="e.g. 6322",
+            label_visibility="collapsed")
+        if st.form_submit_button("Fix", width="stretch"):
+            if not str(fix_code or "").strip():
+                st.warning("Type an account first.")
+            else:
+                common.push_undo()
+                out = sh.recode_rows(work, loaded, storage, [idx], fix_code,
+                                     client_id=client_id)
+                if out["recoded"]:
+                    _done(f"Fixed row {idx + 1} to {str(fix_code).strip()}. "
+                          "Remembered for next time.")
+                else:
+                    _done("That row already has a protected code — "
+                          "it was left alone.")
     if n.button("Not this", width="stretch", key="rev_inbox_not_row",
                 help="Leave this row blank and block the suggestion."):
         common.push_undo()
@@ -365,21 +379,27 @@ def _render_decide_bar(work, loaded, storage, config, client_id, table,
             out = sh.approve_rows(work, loaded, storage, config,
                                   indices=picked, client_id=client_id)
             _done(f"Kept {out['applied']}. Remembered for next time.")
-        fix_code = b2.text_input(
-            "Fix to account", key="rev_recode_code",
-            placeholder="e.g. 6322", label_visibility="collapsed")
-        if b2.button(f"Fix ({len(picked):,})", width="stretch",
-                     key="rev_recode_apply",
-                     disabled=not (picked and str(fix_code or "").strip())):
-            common.push_undo()
-            out = sh.recode_rows(work, loaded, storage, picked, fix_code,
-                                 client_id=client_id)
-            msg = f"Fixed {out['recoded']} row(s) to {str(fix_code).strip()}."
-            if out["skipped_protected"]:
-                msg += f" Left {out['skipped_protected']} already-coded alone."
-            if out["recoded"]:
-                msg += " Remembered for next time."
-            _done(msg)
+        with b2.form("rev_recode_form"):
+            fix_code = st.text_input(
+                "Fix to account", placeholder="e.g. 6322",
+                label_visibility="collapsed")
+            if st.form_submit_button(f"Fix ({len(picked):,})",
+                                     width="stretch",
+                                     disabled=not picked):
+                if not str(fix_code or "").strip():
+                    st.warning("Type an account first.")
+                else:
+                    common.push_undo()
+                    out = sh.recode_rows(work, loaded, storage, picked,
+                                         fix_code, client_id=client_id)
+                    msg = (f"Fixed {out['recoded']} row(s) to "
+                           f"{str(fix_code).strip()}.")
+                    if out["skipped_protected"]:
+                        msg += (f" Left {out['skipped_protected']} "
+                                "already-coded alone.")
+                    if out["recoded"]:
+                        msg += " Remembered for next time."
+                    _done(msg)
         if b3.button(f"Not this ({len(picked):,})", width="stretch",
                      key="rev_reject_picked",
                      disabled=not picked,
@@ -484,6 +504,7 @@ def _done(message: str) -> None:
     common.persist_workspace()
     _bump()
     common.set_flash(message)
+    st.session_state["review_toast"] = message
     st.rerun()
 
 
