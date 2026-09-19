@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import difflib
 import re
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import pandas as pd
 
@@ -118,6 +118,153 @@ def _norm_field(name: str) -> str:
     ``"Memo / Description"`` or ``"memo/description"`` in a different export.
     """
     return re.sub(r"\s+", "", str(name)).lower()
+
+
+# --------------------------------------------------------------------------- #
+# Name / Memo roles, phrase keys and collisions
+# --------------------------------------------------------------------------- #
+# Headers that carry the vendor name (the most distinctive signal on a ledger)
+# and the ones that carry the memo / description (secondary — often noise).
+NAME_LIKE_FIELDS: Tuple[str, ...] = (
+    "Name", "Payee", "Vendor", "Payee Name", "Supplier", "Payee/Payer")
+MEMO_LIKE_FIELDS: Tuple[str, ...] = (
+    "Memo", "Memo/Description", "Memo / Description", "Description")
+_NAME_LIKE_NORM = {_norm_field(f) for f in NAME_LIKE_FIELDS}
+_MEMO_LIKE_NORM = {_norm_field(f) for f in MEMO_LIKE_FIELDS}
+# Tokens that are pure numbers / ids / amounts ("#20", "12", "$1,234.00",
+# "01/05/2026"). They are dropped from ingested phrases and collision keys so
+# "weekly lawn service #20" and "weekly lawn service #21" are one term.
+_NUMERIC_ONLY_TOKEN = re.compile(r"^[#$€£\-\d.,/:%()]+$")
+
+
+def is_name_like(header: object) -> bool:
+    """True for a vendor-name column (Name / Payee / Vendor ...)."""
+    return _norm_field(str(header)) in _NAME_LIKE_NORM
+
+
+def is_memo_like(header: object) -> bool:
+    """True for a memo / description column."""
+    return _norm_field(str(header)) in _MEMO_LIKE_NORM
+
+
+def _is_note_header(header: object) -> bool:
+    """Any header containing "note" (Notes / Rule Notes / Internal Notes)."""
+    return "note" in str(header).strip().lower()
+
+
+def phrase_display(text: object) -> str:
+    """A reusable phrase from a cell: numeric-only tokens dropped, commas
+    replaced (commas separate phrases inside a rule), whitespace collapsed.
+
+    Case is preserved so the rule reads like the ledger. Falls back to the
+    raw (comma-free) text when stripping numbers would leave nothing.
+    """
+    raw = "" if text is None else str(text).replace(",", " ").strip()
+    if not raw:
+        return ""
+    toks = [t for t in raw.split() if not _NUMERIC_ONLY_TOKEN.match(t)]
+    cleaned = " ".join(toks).strip()
+    if not cleaned or not re.search(r"[A-Za-z]", cleaned):
+        return " ".join(raw.split())
+    return cleaned
+
+
+def phrase_key(text: object) -> str:
+    """Canonical comparison key for a phrase / collision (see phrase_display)."""
+    return _norm_space(phrase_display(text))
+
+
+def collision_key_for_row(row: pd.Series, name_col: Optional[str],
+                          memo_col: Optional[str]) -> str:
+    """The collision key of a row: normalised Name if present, else Memo."""
+    if name_col is not None and name_col in row.index:
+        key = phrase_key(row[name_col]) if _has_value(row[name_col]) else ""
+        if key:
+            return key
+    if memo_col is not None and memo_col in row.index and _has_value(row[memo_col]):
+        return phrase_key(row[memo_col])
+    return ""
+
+
+# The spreadsheet's per-row provenance column (see spreadsheet_helpers
+# ENGINE_COL). When present, only rows the accountant *owns* — upload seeds and
+# manual codes — count as coded votes; an engine guess is never a vote.
+_ENGINE_META_COL = "_engine"
+_OWNED_ENGINES = {"seed", "manual", ""}
+
+
+def owned_code_rows(df: pd.DataFrame) -> List[object]:
+    """Index labels of rows whose New Account the accountant owns."""
+    if _ENGINE_META_COL not in df.columns:
+        return list(df.index)
+    eng = df[_ENGINE_META_COL].astype(str).str.strip()
+    return list(df.index[eng.isin(_OWNED_ENGINES)])
+
+
+def detect_collisions(
+    df: pd.DataFrame,
+    name_col: Optional[str],
+    memo_col: Optional[str],
+    na_col: str = NEW_ACCOUNT_COL,
+    seed: Optional[Dict[str, Set[str]]] = None,
+) -> Dict[str, Set[str]]:
+    """Keys (Name, else Memo) that code to **two or more** accounts.
+
+    Looks at the coded rows of ``df`` that the accountant owns (seeds and
+    manual codes — never an engine's own guess) and, optionally, a ``seed``
+    mapping of key -> codes already known (e.g. the phrases of the client's
+    existing rules). Returns only the colliding keys with their full code set.
+    """
+    key_codes: Dict[str, Set[str]] = {k: set(v) for k, v in (seed or {}).items()}
+    if na_col in df.columns and (name_col is not None or memo_col is not None):
+        for idx in owned_code_rows(df):
+            code_raw = df.at[idx, na_col]
+            if _is_blank(code_raw):
+                continue
+            code = normalize_code(str(code_raw).strip())
+            if not code:
+                continue
+            key = collision_key_for_row(df.loc[idx], name_col, memo_col)
+            if key:
+                key_codes.setdefault(key, set()).add(code)
+    return {k: v for k, v in key_codes.items() if len(v) > 1}
+
+
+def format_codes(codes: Iterable[str]) -> str:
+    """``"6326 and 6760.01"`` / ``"6326, 6760.01 and 7000"``."""
+    items = sorted({str(c).strip() for c in codes if str(c).strip()})
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def collision_rationale(codes: Iterable[str]) -> str:
+    """Plain-English why-text for a collision row (never auto-filled)."""
+    return (f"Collision: this vendor/memo also codes to {format_codes(codes)} "
+            "— your coded rows disagree, so it was not auto-filled. "
+            "Choose the right account in Review.")
+
+
+COLLISION_ENGINE = "collision"
+
+
+@dataclass
+class IngestReport:
+    """What one ingest-per-account pass did."""
+
+    rules_created: int = 0
+    rules_updated: int = 0
+    phrases_added: int = 0
+    accounts: List[str] = field(default_factory=list)
+    # key -> sorted colliding codes (persisted; excluded from rule phrases).
+    collisions: Dict[str, List[str]] = field(default_factory=dict)
+    skipped_collision_phrases: int = 0
+    name_col: Optional[str] = None
+    memo_col: Optional[str] = None
+
+    @property
+    def rules_touched(self) -> int:
+        return self.rules_created + self.rules_updated
 
 
 @dataclass
@@ -252,7 +399,10 @@ def get_rule_application_summary(results: List[RuleRunResult]) -> dict:
     """
     protected = sum(1 for r in results if r.status == "protected_existing")
     filled = sum(1 for r in results if r.status == "keyword_rule")
-    left_blank = sum(1 for r in results if r.status == "no_rule_match")
+    collisions = sum(1 for r in results if r.status == "collision")
+    # Collision rows are blank rows a rule was *not allowed* to fill.
+    left_blank = sum(1 for r in results if r.status == "no_rule_match") \
+        + collisions
     # Protected rows that a rule *also* matched — proof the rules fire even when
     # nothing is filled because the cell was already coded.
     protected_but_matched = sum(
@@ -265,6 +415,7 @@ def get_rule_application_summary(results: List[RuleRunResult]) -> dict:
         "protected_but_matched": protected_but_matched,
         "filled_by_rules": filled,
         "left_blank": left_blank,
+        "collisions": collisions,
         "blanks_total": blanks,
         "success_rate": (filled / blanks) if blanks else 0.0,
     }
@@ -349,15 +500,84 @@ class RulesManager:
         """Return the first enabled rule that matches this row, else ``None``.
 
         ``combined_text`` is the pre-built lowercased similarity text. ``row``
-        (optional) lets field-scoped rules inspect individual columns.
+        (optional) lets field-scoped rules inspect individual columns, and
+        enables Name-first matching (see :meth:`_first_matching_rule`).
         """
         rules = rules if rules is not None else self.list_rules(enabled_only=True)
-        for rule in rules:
-            if not rule.enabled:
+        active = [r for r in rules if r.enabled]
+        rule = self._first_matching_rule(active, combined_text, row)
+        if rule is None:
+            return None
+        return RuleMatch(account_code=rule.account_code, rule=rule)
+
+    @staticmethod
+    def resolve_name_memo_columns(
+        columns: Iterable[object],
+        preferred: Optional[Iterable[object]] = None,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """(name column, memo column) among ``columns``.
+
+        ``preferred`` (e.g. the configured keyword-source order) decides which
+        header wins when several name-like or memo-like columns exist. Note-like
+        headers, internal ``_`` columns and the answer column never qualify.
+        """
+        cols = [str(c) for c in columns
+                if not str(c).startswith("_")
+                and str(c) not in (NEW_ACCOUNT_COL, RULE_NOTES_COL)
+                and not _is_note_header(c)]
+        order: List[str] = []
+        for c in list(preferred or []) + cols:
+            c = str(c)
+            if c in cols and c not in order:
+                order.append(c)
+        name_col = next((c for c in order if is_name_like(c)), None)
+        memo_col = next((c for c in order if is_memo_like(c)), None)
+        return name_col, memo_col
+
+    def collision_lookup(
+        self,
+        df: Optional[pd.DataFrame] = None,
+        client_id: Optional[str] = None,
+        name_col: Optional[str] = None,
+        memo_col: Optional[str] = None,
+        na_col: str = NEW_ACCOUNT_COL,
+    ) -> Dict[str, Set[str]]:
+        """Stored collisions for the client, unioned with the book's own.
+
+        A vendor coded two ways *inside the current file* collides just as
+        much as one remembered from an earlier ingest.
+        """
+        stored = self.storage.get_collision_lookup(client_id=client_id)
+        if df is None:
+            return {k: set(v) for k, v in stored.items()}
+        if name_col is None and memo_col is None:
+            name_col, memo_col = self.resolve_name_memo_columns(df.columns)
+        return detect_collisions(df, name_col, memo_col, na_col=na_col,
+                                 seed=stored)
+
+    @staticmethod
+    def _split_name_fields(rule: KeywordRule,
+                           row: pd.Series) -> Tuple[List[str], List[str]]:
+        """A field-scoped rule's resolved columns split into (name, other)."""
+        resolved = RulesManager._resolve_fields(rule.fields, row)
+        names = [c for c in resolved if is_name_like(c)]
+        others = [c for c in resolved if c not in names]
+        return names, others
+
+    @staticmethod
+    def _matches_in_columns(rule: KeywordRule, row: pd.Series,
+                            columns: List[str]) -> bool:
+        """Does any phrase of ``rule`` hit any of these columns on ``row``?"""
+        phrases = rule.match_phrases()
+        for col in columns:
+            val = row[col]
+            if not _has_value(val):
                 continue
-            if self._rule_matches(rule, combined_text, row):
-                return RuleMatch(account_code=rule.account_code, rule=rule)
-        return None
+            hay = str(val)
+            for phrase in phrases:
+                if RulesManager._phrase_matches(rule, phrase, hay):
+                    return True
+        return False
 
     @staticmethod
     def _haystacks(
@@ -584,12 +804,17 @@ class RulesManager:
         df: pd.DataFrame,
         rules: Optional[List[KeywordRule]] = None,
         text_columns: Optional[List[str]] = None,
+        client_id: Optional[str] = None,
+        collisions: Optional[Dict[str, Set[str]]] = None,
     ) -> tuple[pd.DataFrame, List[RuleRunResult]]:
         """Fill blank ``New Account`` cells from keyword rules — deterministically.
 
         Guarantees, in priority order:
           * A row whose ``New Account`` is already non-blank is **never** touched
             (status ``protected_existing``).
+          * A blank row whose vendor (Name, else Memo) codes to more than one
+            account — in this book or in the client's stored collisions — is
+            **never** filled, whatever the rules say (status ``collision``).
           * Blank rows are matched against rules ordered by priority; the first
             matching rule wins and its normalised code is written
             (status ``keyword_rule``).
@@ -604,6 +829,12 @@ class RulesManager:
         if NEW_ACCOUNT_COL not in df.columns:
             df[NEW_ACCOUNT_COL] = ""
 
+        name_col, memo_col = self.resolve_name_memo_columns(df.columns)
+        if collisions is None:
+            collisions = self.collision_lookup(df, client_id=client_id,
+                                               name_col=name_col,
+                                               memo_col=memo_col)
+
         results: List[RuleRunResult] = []
         for pos, idx in enumerate(df.index):
             try:
@@ -617,6 +848,18 @@ class RulesManager:
 
             existing = df.at[idx, NEW_ACCOUNT_COL]
             existing_str = "" if _is_blank(existing) else str(existing).strip()
+            if not existing_str and collisions:
+                key = collision_key_for_row(row, name_col, memo_col)
+                if key and key in collisions:
+                    results.append(RuleRunResult(
+                        row_index=ri, original_value="", proposed_value="",
+                        engine_used=COLLISION_ENGINE, confidence=0.0,
+                        status="collision",
+                        matched_rule_name=(
+                            (matched.notes.strip() or matched.keyword)
+                            if matched is not None else ""),
+                        rationale=collision_rationale(collisions[key])))
+                    continue
             if existing_str:
                 # Never overwrite. If a rule *would* have matched, record it so
                 # the audit can prove the rule fires (it's just already coded).
@@ -657,16 +900,39 @@ class RulesManager:
         match_text: str,
         row: Optional[pd.Series],
     ) -> Optional[KeywordRule]:
-        """First rule (in the given order) that matches — never raises."""
+        """First rule (in the given order) that matches — never raises.
+
+        **Name-first.** For rules scoped to a vendor-name column (Name / Payee
+        / Vendor …) plus other columns — the shape ingest produces — the Name
+        column is searched first and a Name hit wins outright. A hit on the
+        rule's other columns (Memo) is only *provisional*: it is kept as the
+        answer unless a later rule hits the row's Name. So a noisy Memo can
+        never steal a row whose vendor Name belongs to a different account,
+        and Memo still codes rows whose Name is empty or unknown.
+
+        Row-wide rules (no ``fields``) and rules scoped to non-name columns
+        keep their plain priority order; a provisional Memo hit that came
+        earlier in priority still beats them.
+        """
+        pending: Optional[KeywordRule] = None
         for rule in ordered_rules:
             try:
+                if row is not None and rule.fields:
+                    name_cols, other_cols = self._split_name_fields(rule, row)
+                    if name_cols:
+                        if self._matches_in_columns(rule, row, name_cols):
+                            return rule
+                        if pending is None and other_cols and \
+                                self._matches_in_columns(rule, row, other_cols):
+                            pending = rule
+                        continue
                 if self._rule_matches(rule, match_text, row):
-                    return rule
+                    return pending or rule
             except Exception as exc:  # noqa: BLE001 - never fail a whole run
                 logger.warning("rule_match_error", rule=rule.keyword,
                                error=str(exc))
                 continue
-        return None
+        return pending
 
     def prefilled_ingest_candidates(
         self,
@@ -719,6 +985,198 @@ class RulesManager:
         out = sorted(groups.values(), key=lambda g: -g["count"])
         return out[:max_codes]
 
+    # Priority for ingested rules: low number so they run before broad manual
+    # ``contains`` rules (default priority 100).
+    INGEST_PRIORITY = 10
+
+    def _ingest_columns(
+        self,
+        df: pd.DataFrame,
+        source_text_cols: Optional[List[str]],
+        source_text_col: str,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """(name column, memo column) ingest should read from.
+
+        ``source_text_cols`` (the caller's mining columns, Name -> Memo ->
+        Description …, note-like headers already excluded unless the user
+        opted them in) decides preference. Without it, the legacy
+        ``source_text_col`` leads, then the file's own headers. When the file
+        has neither a name-like nor a memo-like header, the first text column
+        with values stands in as the memo column so ingest still works.
+        """
+        if source_text_cols:
+            pool = [c for c in source_text_cols if c in df.columns]
+        else:
+            pool = [c for c in [source_text_col] + list(df.columns)
+                    if c in df.columns and not str(c).startswith("_")
+                    and c not in (NEW_ACCOUNT_COL, RULE_NOTES_COL)
+                    and not _is_note_header(c)]
+        # Stable de-dupe.
+        ordered: List[str] = []
+        for c in pool:
+            if c not in ordered:
+                ordered.append(c)
+        name_col, memo_col = self.resolve_name_memo_columns(ordered, ordered)
+        if name_col is None and memo_col is None:
+            for c in ordered:
+                if df[c].apply(_has_value).any():
+                    memo_col = c
+                    break
+        return name_col, memo_col
+
+    def ingest_rules_per_account(
+        self,
+        df: pd.DataFrame,
+        client_id: Optional[str] = None,
+        source_text_col: str = "Description",
+        source_text_cols: Optional[List[str]] = None,
+        match_type: str = "contains",
+    ) -> IngestReport:
+        """Turn coded rows into **one rule per GL account** (merge on re-ingest).
+
+        For each canonical ``New Account`` code on the coded rows, one rule is
+        built whose phrase list is every distinct vendor **Name** on that
+        account, then every distinct **Memo** term. A row with no Name
+        contributes its Memo only. Phrases are persisted in full (the UI may
+        abbreviate the display). When a rule for that account + client already
+        exists it is **merged** (phrase union, same rule id) — never a second
+        rule for the same destination code.
+
+        Rules are ``contains`` (so "lease fee" hits "August lease fee — unit
+        12"), high priority, and field-scoped to the Name + Memo columns so
+        Notes can never participate. Matching is Name-first (see
+        :meth:`_first_matching_rule`).
+
+        **Collisions** — a Name (or, when Name is blank, a Memo) coded to two or
+        more accounts in this book or in the client's existing rules — are
+        persisted to storage and left *out* of every rule: rows carrying that
+        vendor escalate to Review until the accountant decides.
+        """
+        report = IngestReport()
+        if NEW_ACCOUNT_COL not in df.columns:
+            return report
+        name_col, memo_col = self._ingest_columns(df, source_text_cols,
+                                                  source_text_col)
+        report.name_col, report.memo_col = name_col, memo_col
+        if name_col is None and memo_col is None:
+            return report
+
+        existing_rules = self.list_rules(client_id=client_id)
+        # Only rules for THIS client (or global when no client) may be merged
+        # into; a global rule is never rewritten from a client's book.
+        own_rules = [r for r in existing_rules
+                     if r.client_id == client_id and r.match_type != "regex"]
+        # Merge target per account: an earlier ingested rule first, else the
+        # oldest rule for that code (a regex rule is a single pattern and is
+        # never spliced into).
+        by_code: Dict[str, KeywordRule] = {}
+        for r in sorted(own_rules,
+                        key=lambda r: (not r.notes.startswith("Ingested"),
+                                       r.id or 0)):
+            by_code.setdefault(normalize_code(r.account_code), r)
+
+        # ---- gather phrases per account (Names first, then Memos) --------
+        names_by_code: Dict[str, List[str]] = {}
+        memos_by_code: Dict[str, List[str]] = {}
+        seen_by_code: Dict[str, Set[str]] = {}
+        # Only codes the accountant owns (seeds / manual) become rules — an
+        # engine's own guess must never be promoted into a rule.
+        for idx in owned_code_rows(df):
+            code_raw = df.at[idx, NEW_ACCOUNT_COL]
+            if _is_blank(code_raw):
+                continue
+            code = normalize_code(str(code_raw).strip())
+            if not code:
+                continue
+            row = df.loc[idx]
+            seen = seen_by_code.setdefault(code, set())
+            names_by_code.setdefault(code, [])
+            memos_by_code.setdefault(code, [])
+            if name_col is not None and _has_value(row.get(name_col)):
+                disp = phrase_display(row.get(name_col))
+                key = _norm_space(disp)
+                if key and key not in seen:
+                    seen.add(key)
+                    names_by_code[code].append(disp)
+            if memo_col is not None and _has_value(row.get(memo_col)):
+                disp = phrase_display(row.get(memo_col))
+                key = _norm_space(disp)
+                if key and len(re.sub(r"[^a-z]", "", key)) >= 3 \
+                        and key not in seen:
+                    seen.add(key)
+                    memos_by_code[code].append(disp)
+
+        # ---- collisions: book rows + phrases of the client's existing rules
+        seed: Dict[str, Set[str]] = {}
+        for r in existing_rules:
+            rcode = normalize_code(r.account_code)
+            for phrase in r.match_phrases():
+                k = phrase_key(phrase)
+                if k:
+                    seed.setdefault(k, set()).add(rcode)
+        collisions = detect_collisions(df, name_col, memo_col, seed=seed)
+        # A Memo term can also collide across accounts on its own (two rules
+        # would both claim it); treat those as collisions too.
+        memo_owners: Dict[str, Set[str]] = {}
+        for code, memos in memos_by_code.items():
+            for m in memos:
+                memo_owners.setdefault(_norm_space(m), set()).add(code)
+        for k, owners in memo_owners.items():
+            owners = owners | seed.get(k, set())
+            if len(owners) > 1:
+                collisions[k] = collisions.get(k, set()) | owners
+        for key, codes in collisions.items():
+            self.storage.upsert_collision(key, codes, client_id=client_id,
+                                          source="ingest")
+        report.collisions = {k: sorted(v) for k, v in collisions.items()}
+
+        # ---- build / merge one rule per account ---------------------------
+        fields = [c for c in (name_col, memo_col) if c]
+        for code in names_by_code:
+            phrases = names_by_code[code] + memos_by_code[code]
+            usable: List[str] = []
+            for p in phrases:
+                if _norm_space(p) in collisions:
+                    report.skipped_collision_phrases += 1
+                    continue
+                usable.append(p)
+            if not usable:
+                continue
+
+            rule = by_code.get(code)
+            if rule is None:
+                saved = self.add_rule(
+                    ", ".join(usable), code, match_type=match_type,
+                    priority=self.INGEST_PRIORITY, fields=list(fields),
+                    client_id=client_id,
+                    notes=f"Ingested from coded rows ({code}): one rule per "
+                          "account, vendor names first, then memo terms.")
+                by_code[code] = saved
+                report.rules_created += 1
+                report.phrases_added += len(usable)
+                report.accounts.append(code)
+                continue
+
+            have = {_norm_space(p) for p in rule.match_phrases()}
+            new = [p for p in usable if _norm_space(p) not in have]
+            if not new:
+                continue
+            rule.keyword = ", ".join(rule.match_phrases() + new)
+            # Widen the scope so the new Name/Memo phrases can be seen.
+            for f in fields:
+                if rule.fields and f not in rule.fields:
+                    rule.fields.append(f)
+            self.update_rule(rule)
+            report.rules_updated += 1
+            report.phrases_added += len(new)
+            report.accounts.append(code)
+
+        logger.info("rules_ingested_per_account",
+                    created=report.rules_created, updated=report.rules_updated,
+                    phrases=report.phrases_added,
+                    collisions=len(report.collisions))
+        return report
+
     def ingest_existing_new_account_as_rules(
         self,
         df: pd.DataFrame,
@@ -726,63 +1184,16 @@ class RulesManager:
         source_text_col: str = "Description",
         source_text_cols: Optional[List[str]] = None,
     ) -> int:
-        """Turn pre-filled ``New Account`` rows into high-priority exact rules.
+        """Ingest coded rows as one rule per account (see
+        :meth:`ingest_rules_per_account`).
 
-        Each coded row becomes a reusable exact-match rule (``priority=10`` so it
-        wins over broad ``contains`` rules). The rule keyword is taken from the
-        first column with a value in ``source_text_cols`` preference order
-        (Name → Memo → Description … — never note-like columns); when that list
-        is omitted, ``source_text_col`` is tried, then the first meaningful text
-        column on the row. Duplicates (same phrase + code, or an
-        already-existing rule) are skipped. Returns the number of new rules
-        created.
+        Returns the number of rules created **or extended** — ``0`` when every
+        vendor on every account is already covered (idempotent).
         """
-        if NEW_ACCOUNT_COL not in df.columns:
-            return 0
-
-        existing = {(r.keyword.strip().lower(), normalize_code(r.account_code))
-                    for r in self.list_rules()}
-        created = 0
-        for idx in df.index:
-            code_raw = df.at[idx, NEW_ACCOUNT_COL]
-            code_str = "" if _is_blank(code_raw) else str(code_raw).strip()
-            if not code_str:
-                continue
-
-            row = df.loc[idx]
-            text = ""
-            if source_text_cols:
-                for col in source_text_cols:
-                    if col in df.columns and _has_value(row.get(col)):
-                        text = str(row.get(col)).strip()
-                        break
-            if not text:
-                if source_text_col in df.columns \
-                        and _has_value(row.get(source_text_col)):
-                    text = str(row.get(source_text_col)).strip()
-                else:
-                    for c in df.columns:
-                        if str(c).startswith("_") or c in (NEW_ACCOUNT_COL, RULE_NOTES_COL):
-                            continue
-                        if _has_value(row.get(c)):
-                            text = str(row.get(c)).strip()
-                            break
-            if not text:
-                continue
-
-            norm_code = normalize_code(code_str)
-            key = (text.lower(), norm_code)
-            if key in existing:
-                continue
-            self.add_rule(
-                text, norm_code, match_type="exact", priority=10,
-                client_id=client_id,
-                notes=f"Ingested from pre-filled New Account ({norm_code}).")
-            existing.add(key)
-            created += 1
-
-        logger.info("rules_ingested_from_new_account", count=created)
-        return created
+        report = self.ingest_rules_per_account(
+            df, client_id=client_id, source_text_col=source_text_col,
+            source_text_cols=source_text_cols)
+        return report.rules_touched
 
     def create_sample_rules(self) -> List[KeywordRule]:
         """Create a couple of sample rules (for demos / tests)."""

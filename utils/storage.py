@@ -80,6 +80,20 @@ class Storage:
                     UNIQUE(signature, account_code, client_id)
                 );
 
+                -- Vendor / memo keys that code to MORE THAN ONE GL account for
+                -- a client (e.g. "home depot" -> 6326 and 6760.01). Rows with
+                -- a colliding key are never auto-filled; they escalate to
+                -- Review until the accountant decides.
+                CREATE TABLE IF NOT EXISTS collision_keys (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    key           TEXT NOT NULL,
+                    account_codes TEXT NOT NULL DEFAULT '[]',   -- JSON array
+                    client_id     TEXT NOT NULL DEFAULT '',
+                    source        TEXT NOT NULL DEFAULT '',
+                    updated_at    TEXT NOT NULL,
+                    UNIQUE(key, client_id)
+                );
+
                 -- Per-transaction "Rule Notes" keyed by a *base* text signature
                 -- (the transaction text only, without the notes themselves) so
                 -- that notes re-attach to the same rows across future uploads.
@@ -235,6 +249,7 @@ class Storage:
                 DROP TABLE IF EXISTS rules;
                 DROP TABLE IF EXISTS learned_mappings;
                 DROP TABLE IF EXISTS blocked_mappings;
+                DROP TABLE IF EXISTS collision_keys;
                 DROP TABLE IF EXISTS rule_notes;
                 DROP TABLE IF EXISTS training_data;
                 DROP TABLE IF EXISTS run_history;
@@ -477,6 +492,85 @@ class Storage:
     def clear_blocked_mappings(self) -> None:
         with self._lock, self._conn:
             self._conn.execute("DELETE FROM blocked_mappings")
+
+    # -------------------------------------------------------- collision keys
+    def upsert_collision(self, key: str, account_codes, client_id: Optional[str] = None,
+                         source: str = "") -> None:
+        """Record that ``key`` (a normalised vendor/memo) codes to 2+ accounts.
+
+        Codes are unioned with any already stored for the key, so a later
+        file that adds a third account widens the collision instead of
+        replacing it. Keys with fewer than two codes are ignored.
+        """
+        key = (key or "").strip()
+        codes = sorted({str(c).strip() for c in (account_codes or []) if str(c).strip()})
+        if not key or len(codes) < 2:
+            return
+        cid = client_id or ""
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT account_codes FROM collision_keys WHERE key=? AND client_id=?",
+                (key, cid)).fetchone()
+            if row:
+                codes = sorted(set(codes) | set(json.loads(row["account_codes"] or "[]")))
+            self._conn.execute(
+                """INSERT INTO collision_keys
+                       (key, account_codes, client_id, source, updated_at)
+                   VALUES (?,?,?,?,?)
+                   ON CONFLICT(key, client_id) DO UPDATE SET
+                       account_codes = excluded.account_codes,
+                       source = excluded.source,
+                       updated_at = excluded.updated_at""",
+                (key, json.dumps(codes), cid, source or "", _utcnow_iso()),
+            )
+
+    def get_collision_lookup(self, client_id: Optional[str] = None) -> dict:
+        """Return {key: {account codes}} — every key that must escalate.
+
+        ``client_id=None`` returns every stored collision; a value narrows to
+        that client's plus the shared/default ones.
+        """
+        query = "SELECT key, account_codes FROM collision_keys"
+        params: List[object] = []
+        if client_id is not None:
+            query += " WHERE client_id IN ('', ?)"
+            params.append(client_id)
+        with self._lock:
+            rows = self._conn.execute(query, params).fetchall()
+        out: dict = {}
+        for r in rows:
+            out.setdefault(r["key"], set()).update(
+                json.loads(r["account_codes"] or "[]"))
+        return out
+
+    def list_collisions(self, client_id: Optional[str] = None) -> List[dict]:
+        query = "SELECT * FROM collision_keys"
+        params: List[object] = []
+        if client_id is not None:
+            query += " WHERE client_id IN ('', ?)"
+            params.append(client_id)
+        query += " ORDER BY key"
+        with self._lock:
+            rows = self._conn.execute(query, params).fetchall()
+        return [{"id": r["id"], "key": r["key"],
+                 "account_codes": json.loads(r["account_codes"] or "[]"),
+                 "client_id": r["client_id"] or None, "source": r["source"],
+                 "updated_at": r["updated_at"]} for r in rows]
+
+    def delete_collision(self, key: str, client_id: Optional[str] = None) -> bool:
+        """Resolve (forget) one collision key. Returns True when removed."""
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM collision_keys WHERE key=? AND client_id=?",
+                ((key or "").strip(), client_id or ""))
+            return bool(cur.rowcount)
+
+    def count_collisions(self, client_id: Optional[str] = None) -> int:
+        return len(self.get_collision_lookup(client_id=client_id))
+
+    def clear_collisions(self) -> None:
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM collision_keys")
 
     # ------------------------------------------------------------ rule notes
     def upsert_rule_note(self, base_sig: str, notes: str) -> None:

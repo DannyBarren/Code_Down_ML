@@ -40,7 +40,14 @@ from src.data_loader import (
     recompute_sim_text,
 )
 from src.fill_down_engine import EngineResult, FillDownEngine
-from src.rules_manager import RulesManager, RuleMatch
+from src.rules_manager import (
+    COLLISION_ENGINE,
+    RulesManager,
+    RuleMatch,
+    collision_key_for_row,
+    collision_rationale,
+    format_codes,
+)
 from utils.account_codes import normalize_code
 from utils.storage import Storage
 
@@ -72,6 +79,7 @@ ENGINE_FRIENDLY = {
     "ml+similarity": "AI + similarity agree",
     "none": "No confident match",
     "manual": "Edited by you",
+    COLLISION_ENGINE: "Vendor maps to more than one account",
 }
 
 
@@ -265,6 +273,8 @@ def run_rules_only(work_df: pd.DataFrame, rules_manager: RulesManager,
         return 0
     if indices is None:
         indices = list(range(len(work_df)))
+    collisions, name_col, memo_col = _collision_context(
+        work_df, loaded, rules_manager, client_id)
 
     na = work_df[na_col].tolist()
     sim = work_df[SIM_TEXT_COL].tolist()
@@ -283,8 +293,19 @@ def run_rules_only(work_df: pd.DataFrame, rules_manager: RulesManager,
             # Protect values the user entered themselves.
             if str(eng[i]) in _PROTECTED_ENGINES:
                 continue
+        row = work_df.iloc[i]
+        if collisions:
+            key = collision_key_for_row(row, name_col, memo_col)
+            if key and key in collisions:
+                if not existing:
+                    # Never filled by a rule — escalate to Review instead.
+                    eng[i] = COLLISION_ENGINE
+                    act[i] = FillAction.NEEDS_REVIEW.value
+                    conf[i] = 0.0
+                    why[i] = collision_rationale(collisions[key])
+                continue
         match: Optional[RuleMatch] = rules_manager.match_row(
-            sim[i], row=work_df.iloc[i], rules=active)
+            sim[i], row=row, rules=active)
         if not match:
             continue
         code = normalize_code(match.account_code)
@@ -330,6 +351,8 @@ def run_selected_rules_audited(
         rules_manager.list_rules(enabled_only=True, client_id=client_id))
     if indices is None:
         indices = list(work_df.index)
+    collisions, name_col, memo_col = _collision_context(
+        work_df, loaded, rules_manager, client_id)
 
     results: list = []
     applied = 0
@@ -343,16 +366,28 @@ def run_selected_rules_audited(
 
         row = work_df.loc[idx]
         sim = str(work_df.at[idx, SIM_TEXT_COL] or "")
-        matched = None
-        for rule in active:
-            try:
-                if rules_manager._rule_matches(rule, sim, row):
-                    matched = rule
-                    break
-            except Exception:  # noqa: BLE001 - never fail the whole run
-                continue
+        # Name-first, priority-ordered — the same matcher every path uses.
+        matched = rules_manager._first_matching_rule(active, sim, row)
 
         existing = str(work_df.at[idx, na_col] or "").strip()
+        if not existing and collisions:
+            key = collision_key_for_row(row, name_col, memo_col)
+            if key and key in collisions:
+                # A vendor coded two ways is never filled by a rule — not in
+                # Strict, not at 0.99. It escalates to Review, marked.
+                why = collision_rationale(collisions[key])
+                work_df.at[idx, CONF_COL] = 0.0
+                work_df.at[idx, ENGINE_COL] = COLLISION_ENGINE
+                work_df.at[idx, ACTION_COL] = FillAction.NEEDS_REVIEW.value
+                work_df.at[idx, WHY_COL] = why
+                work_df.at[idx, SUGGESTED_COL] = ""
+                results.append(RuleRunResult(
+                    row_index=ri, engine_used=COLLISION_ENGINE,
+                    status="collision", rationale=why,
+                    matched_rule_name=(
+                        (matched.notes.strip() or matched.keyword)
+                        if matched is not None else "")))
+                continue
         if existing:
             # Never overwrite. Record a rule that would have matched, so the
             # audit shows the rule fires even though the cell is already coded.
@@ -412,7 +447,10 @@ def pure_rule_audit(results: list, config: Config) -> Dict[str, object]:
                          if r.status == "protected_existing" and r.matched_rule_name]
     protected_existing = sum(1 for r in results
                              if r.status == "protected_existing")
-    left_blank = sum(1 for r in results if r.status == "no_rule_match")
+    collisions = sum(1 for r in results if r.status == "collision")
+    # Collision rows are blank rows the rules were not allowed to fill.
+    left_blank = sum(1 for r in results if r.status == "no_rule_match") \
+        + collisions
     confs = [float(config.confidence.rule_match_confidence)] * len(kw_fills)
     buckets = _bucket_confidences(confs, config)
     return {
@@ -426,10 +464,137 @@ def pure_rule_audit(results: list, config: Config) -> Dict[str, object]:
         "protected_existing": protected_existing,
         "protected_but_matched": len(protected_results),
         "left_blank": left_blank,
+        "collisions": collisions,
         "conf_high": buckets["high"],
         "conf_medium": buckets["medium"],
         "conf_low": buckets["low"],
     }
+
+
+# --------------------------------------------------------------------------- #
+# Collisions — a vendor that codes to more than one account
+# --------------------------------------------------------------------------- #
+def _collision_context(work_df: pd.DataFrame, loaded: LoadedData,
+                       rules_manager: RulesManager,
+                       client_id: Optional[str]) -> Tuple[Dict[str, set], Optional[str], Optional[str]]:
+    """(collision lookup, name column, memo column) for a run over ``work_df``.
+
+    The lookup is the client's stored collisions unioned with the ones inside
+    this book. Never raises — a lookup failure just means "no collisions".
+    """
+    name_col, memo_col = RulesManager.resolve_name_memo_columns(
+        work_df.columns)
+    try:
+        lookup = rules_manager.collision_lookup(
+            work_df, client_id=client_id, name_col=name_col, memo_col=memo_col,
+            na_col=loaded.new_account_col)
+    except Exception:  # noqa: BLE001 - never break a run
+        lookup = {}
+    return lookup, name_col, memo_col
+
+
+def collision_lookup_for(work_df: pd.DataFrame, loaded: LoadedData,
+                         storage: Storage,
+                         client_id: Optional[str] = None) -> Dict[str, set]:
+    """Stored + in-book collisions, keyed by normalised Name (else Memo)."""
+    lookup, _, _ = _collision_context(work_df, loaded, RulesManager(storage),
+                                      client_id)
+    return lookup
+
+
+def collision_codes_for_row(work_df: pd.DataFrame, loaded: LoadedData,
+                            row_idx: int, lookup: Dict[str, set]) -> List[str]:
+    """Sorted competing codes for one row (``[]`` when it does not collide)."""
+    if not lookup or row_idx not in work_df.index:
+        return []
+    name_col, memo_col = RulesManager.resolve_name_memo_columns(
+        work_df.columns)
+    key = collision_key_for_row(work_df.loc[row_idx], name_col, memo_col)
+    return sorted(lookup.get(key, set())) if key else []
+
+
+def is_collision_row(work_df: pd.DataFrame, row_idx: int) -> bool:
+    """True when a run marked this row as a collision (engine label)."""
+    if ENGINE_COL not in work_df.columns or row_idx not in work_df.index:
+        return False
+    return str(work_df.at[row_idx, ENGINE_COL] or "").strip() == COLLISION_ENGINE
+
+
+def collision_badge_text(codes: List[str]) -> str:
+    """Plain English for the Review card."""
+    if not codes:
+        return "This vendor already maps to more than one account."
+    return ("This vendor already maps to more than one account: "
+            f"{format_codes(codes)}.")
+
+
+# --------------------------------------------------------------------------- #
+# Auto-approve above a user-set threshold (default: config auto_apply_cutoff)
+# --------------------------------------------------------------------------- #
+# Engines whose fills are the accountant's own or already memory — nothing to
+# learn from them again. Collisions are never auto-approved.
+_NO_AUTO_LEARN_ENGINES = {"seed", "manual", "learned", COLLISION_ENGINE, ""}
+
+
+def auto_approve_threshold(config: Config,
+                           override: Optional[float] = None) -> float:
+    """The effective threshold: the user's override, else the config default."""
+    value = config.confidence.auto_apply_cutoff if override is None else override
+    return float(min(max(float(value), 0.0), 1.0))
+
+
+def auto_approve_learn(work_df: pd.DataFrame, loaded: LoadedData,
+                       storage: Storage, config: Config,
+                       threshold: Optional[float] = None,
+                       client_id: Optional[str] = None) -> Dict[str, object]:
+    """Learn the rows a run auto-approved at or above ``threshold``.
+
+    A run writes ``AUTO_FILLED`` rows itself (the engine honours the cutoff).
+    This records each of them through :func:`record_human_approval` — the same
+    path Keep uses — so the other accountant on the live URL benefits. Only
+    blank-at-run rows the engine filled qualify: seeds and manual codes are
+    never touched or re-learned, collisions never qualify (they are never
+    filled), and seed-disagreement rows are ``FILLED_REVIEW`` / ``NEEDS_REVIEW``
+    so they never qualify either.
+    """
+    from src.rules_manager import record_human_approval
+
+    ensure_state_columns(work_df)
+    thr = auto_approve_threshold(config, threshold)
+    na_col = loaded.new_account_col
+    learned = 0
+    approved = 0
+    for idx in work_df.index:
+        if str(work_df.at[idx, ACTION_COL] or "") != FillAction.AUTO_FILLED.value:
+            continue
+        engine = str(work_df.at[idx, ENGINE_COL] or "").strip()
+        if engine in _NO_AUTO_LEARN_ENGINES:
+            continue
+        conf = _safe_float(work_df.at[idx, CONF_COL], 0.0)
+        if conf < thr:
+            continue
+        code = str(work_df.at[idx, na_col] or "").strip()
+        if not code:
+            continue
+        approved += 1
+        sig = str(work_df.at[idx, SIM_TEXT_COL] or "").strip() \
+            if SIM_TEXT_COL in work_df.columns else ""
+        if sig and record_human_approval(
+                storage, sig, normalize_code(code), confidence=conf,
+                engine_used=f"auto:{engine}", approved_by="auto",
+                client_id=client_id):
+            learned += 1
+    counts = summary_counts(work_df, loaded)
+    return {"auto_approved": approved, "learned": learned, "threshold": thr,
+            "review_pending": counts["review_pending"]}
+
+
+def auto_approve_message(out: Dict[str, object]) -> str:
+    """"Auto-approved N rows at or above X%. Review still has M." """
+    pct = int(round(float(out.get("threshold", 0.0)) * 100))
+    return (f"Auto-approved {int(out.get('auto_approved', 0)):,} row(s) at or "
+            f"above {pct}%. Review still has "
+            f"{int(out.get('review_pending', 0)):,}.")
 
 
 def matched_records_view(work_df: pd.DataFrame, loaded: LoadedData,
@@ -738,9 +903,17 @@ def rule_keyword_columns(work_df: pd.DataFrame, loaded: LoadedData,
 def suggest_keyword_from_cell(work_df: pd.DataFrame, row_idx: int,
                               column: Optional[str], loaded: LoadedData,
                               config: Optional[Config] = None) -> str:
-    """Best keyword from one row's column (column-focused rule creation)."""
+    """Best keyword from one row's column (column-focused rule creation).
+
+    Note-like columns (Notes / Rule Notes / any header containing "note")
+    never yield a keyword unless the user opted them in via
+    ``columns.keyword_source``; the request falls back to the Name -> Memo
+    row suggestion instead. Account-like numbers in Notes are never codes.
+    """
     if row_idx < 0 or row_idx >= len(work_df):
         return ""
+    if column and (column == RULE_NOTES_COL or _is_note_column(column, config)):
+        column = None
     if column and column in work_df.columns:
         raw = str(work_df.iloc[row_idx][column] or "").strip()
         if raw:
@@ -1556,6 +1729,10 @@ def group_review_summary(work_df: pd.DataFrame, loaded: LoadedData,
         gid = work_df.at[i, GROUP_COL]
         if str(gid).strip() in ("", "-1", "None"):
             continue
+        # A collision needs its own decision — never folded into a pile that
+        # could be one-click Kept at a code the vendor only sometimes uses.
+        if str(work_df.at[i, ENGINE_COL] or "").strip() == COLLISION_ENGINE:
+            continue
         gid = int(gid)
         g = groups.setdefault(gid, {"group_id": gid, "indices": [],
                                     "codes": {}, "confs": [], "sample": ""})
@@ -1694,6 +1871,7 @@ def reject_rows(work_df: pd.DataFrame, loaded: LoadedData, storage: Storage,
     na_col = loaded.new_account_col
     rejected = 0
     blocked = 0
+    collision_lookup: Optional[Dict[str, set]] = None
     for idx in indices:
         if idx not in work_df.index:
             continue
@@ -1708,6 +1886,17 @@ def reject_rows(work_df: pd.DataFrame, loaded: LoadedData, storage: Storage,
             storage.block_mapping(sig, normalize_code(rejected_code),
                                   client_id=client_id)
             blocked += 1
+        elif sig and engine == COLLISION_ENGINE:
+            # Not this on a collision: block every competing code for this
+            # exact transaction. Never learns a positive mapping.
+            if collision_lookup is None:
+                collision_lookup = collision_lookup_for(
+                    work_df, loaded, storage, client_id=client_id)
+            for code in collision_codes_for_row(work_df, loaded, idx,
+                                                collision_lookup):
+                storage.block_mapping(sig, normalize_code(code),
+                                      client_id=client_id)
+                blocked += 1
         if engine not in _PROTECTED_ENGINES:
             work_df.at[idx, na_col] = ""
         work_df.at[idx, SUGGESTED_COL] = ""
