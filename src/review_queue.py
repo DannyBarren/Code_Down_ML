@@ -2,12 +2,16 @@
 
 The engine flags two kinds of rows for review:
     * FILLED_REVIEW – a value was applied but confidence is only moderate.
-    * NEEDS_REVIEW  – a plausible suggestion exists but was not auto-applied.
+    * NEEDS_REVIEW  – a plausible suggestion exists but was not auto-applied,
+      **or** the row is a *collision* (``engine_used == "collision"``: the
+      vendor codes to more than one account, so nothing was filled).
 
 This module turns those into a tidy editable table and applies the user's
 corrections back onto the working dataframe. Every approval is recorded both as
 a learned mapping (instant exact-match memory) **and** as a labelled training
-example (so the ML models improve over time).
+example (so the ML models improve over time). Rows the engine auto-approved at
+or above the user's threshold learn through the same path
+(:func:`learn_auto_approved`).
 """
 
 from __future__ import annotations
@@ -26,10 +30,70 @@ from utils.storage import Storage
 logger = get_logger(__name__)
 
 REVIEW_ACTIONS = (FillAction.FILLED_REVIEW, FillAction.NEEDS_REVIEW)
+# Engine label the fill engine stamps on collision rows (always NEEDS_REVIEW).
+COLLISION_ENGINE = "collision"
 
 # Stable, ordered list of the non-text columns the review table always carries.
 META_COLUMNS = ["Group", "Current", "Suggested", "New Account", "Confidence",
                 "Engine", "Action", "Approve", "Why"]
+
+
+def is_collision(result: FillResult) -> bool:
+    """True for a row the engine escalated because its vendor codes two ways."""
+    return (result.action == FillAction.NEEDS_REVIEW
+            and result.engine_used == COLLISION_ENGINE)
+
+
+def learn_auto_approved(
+    df: pd.DataFrame,
+    results: List[FillResult],
+    na_col: str,
+    threshold: float,
+    storage: Storage,
+    client_id: Optional[str] = None,
+    approved_by: str = "auto",
+) -> Dict[str, int]:
+    """Record the run's auto-approved rows as approvals (same path as Keep).
+
+    Qualifying rows: ``AUTO_FILLED`` by the engine (so the New Account was
+    blank before the run and now carries the proposed code), confidence at or
+    above ``threshold``, and not a seed / learned / collision row. Collision
+    and seed-disagreement rows are ``NEEDS_REVIEW`` / ``FILLED_REVIEW`` and
+    therefore never qualify. Nothing already in the sheet is overwritten —
+    this only *learns*.
+    """
+    from src.rules_manager import record_human_approval
+
+    approved = 0
+    learned = 0
+    review = 0
+    sig_idx = df.columns.get_loc(SIM_TEXT_COL) if SIM_TEXT_COL in df.columns else None
+    na_idx = df.columns.get_loc(na_col)
+    for r in results:
+        if r.action in REVIEW_ACTIONS:
+            review += 1
+            continue
+        if r.action != FillAction.AUTO_FILLED:
+            continue
+        if r.engine_used in ("seed", "learned", COLLISION_ENGINE):
+            continue
+        if float(r.confidence) < float(threshold):
+            continue
+        code = normalize_code(str(df.iat[r.row_index, na_idx] or "").strip())
+        if not code:
+            continue
+        approved += 1
+        if sig_idx is None:
+            continue
+        signature = str(df.iat[r.row_index, sig_idx]).strip()
+        if signature and record_human_approval(
+                storage, signature, code, confidence=float(r.confidence),
+                engine_used=f"auto:{r.engine_used}", approved_by=approved_by,
+                client_id=client_id):
+            learned += 1
+    logger.info("auto_approved_learned", approved=approved, learned=learned,
+                threshold=threshold, review=review)
+    return {"auto_approved": approved, "learned": learned, "review": review}
 
 
 @dataclass
