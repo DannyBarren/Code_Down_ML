@@ -239,3 +239,86 @@ def test_promote_control_available_when_the_table_is_hidden():
     at.run()
     assert not at.exception, at.exception
     assert _has_key(at, "rev_promote_btn")
+
+
+# --------------------------------------------------------------------------- #
+# Collision badge + auto-approve threshold (added onto the existing card)
+# --------------------------------------------------------------------------- #
+def _stage_collision_row(at, codes=("6326", "6760.01")):
+    """One blank row marked as a collision by a run, with its key stored."""
+    from src.rules_manager import RulesManager, collision_key_for_row, \
+        collision_rationale
+
+    work = at.session_state["work_df"]
+    loaded = at.session_state["loaded"]
+    na = loaded.new_account_col
+    idx = next(int(i) for i in work.index
+               if not str(work.at[i, na] or "").strip())
+    work.at[idx, sh.GROUP_COL] = ""
+    work.at[idx, sh.ACTION_COL] = FillAction.NEEDS_REVIEW.value
+    work.at[idx, sh.ENGINE_COL] = "collision"
+    work.at[idx, sh.SUGGESTED_COL] = ""
+    work.at[idx, sh.CONF_COL] = 0.0
+    work.at[idx, sh.WHY_COL] = collision_rationale(set(codes))
+    name_col, memo_col = RulesManager.resolve_name_memo_columns(work.columns)
+    key = collision_key_for_row(work.loc[idx], name_col, memo_col)
+    assert key
+    _storage().upsert_collision(key, set(codes),
+                                client_id=at.session_state.get("client_id"))
+    at.session_state["view"] = "review"
+    at.run()
+    assert not at.exception, at.exception
+    return idx
+
+
+def test_collision_row_shows_badge_with_both_codes_and_fix_still_learns():
+    at = _loaded_app()
+    idx = _stage_collision_row(at)
+    loaded = at.session_state["loaded"]
+    na = loaded.new_account_col
+
+    blob = " ".join(m.value for m in at.markdown)
+    assert "Collision" in blob
+    assert "more than one account" in blob
+    assert "6326" in blob and "6760.01" in blob
+    # No suggestion to Keep — the human must Fix or Not this.
+    assert _button_by_key(at, "rev_inbox_keep_row").disabled
+
+    # Fix through the card's form: type the code, submit.
+    assert not any(m.account_code == "6760.01"
+                   for m in _storage().list_learned_mappings())
+    fix_input = next(t for t in at.text_input
+                     if (t.label or "").startswith("Fix to account"))
+    fix_input.set_value("6760.01")
+    _button(at, "Fix").click().run()
+    assert not at.exception, at.exception
+    work = at.session_state["work_df"]
+    assert str(work.at[idx, na]).strip() == "6760.01"
+    # Fix is a human decision: it learns the mapping (the single learning path).
+    assert any(m.account_code == "6760.01"
+               for m in _storage().list_learned_mappings()), "Fix must remember"
+    assert sh.summary_counts(work, loaded)["review_pending"] == 0
+
+
+def test_threshold_slider_updates_the_shared_session_value_and_config():
+    at = _loaded_app()
+    _seed_review_queue(at)
+    from ui.common import services
+    config = services()[0]
+
+    slider = next(s for s in at.slider if s.key == "review_auto_threshold")
+    assert abs(slider.value - 0.85) < 1e-9          # config default
+    blob = " ".join(m.value for m in at.markdown) + " ".join(
+        c.value for c in at.caption)
+    assert "85%" in blob
+
+    slider.set_value(0.9).run()
+    assert not at.exception, at.exception
+    assert abs(at.session_state["auto_approve_threshold"] - 0.9) < 1e-9
+    assert abs(config.confidence.auto_apply_cutoff - 0.9) < 1e-9
+    # The sidebar slider reads the same value.
+    sidebar = [s for s in at.slider if s.key == "sidebar_auto_threshold"]
+    assert not sidebar or abs(sidebar[0].value - 0.9) < 1e-9
+    # Restore so sibling tests keep the default.
+    slider.set_value(0.85).run()
+    assert abs(config.confidence.auto_apply_cutoff - 0.85) < 1e-9
