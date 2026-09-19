@@ -6,7 +6,11 @@ from pathlib import Path
 
 import streamlit as st
 
-from src.data_loader import DataLoadError, list_excel_sheets
+from src.data_loader import (
+    DataLoadError,
+    list_excel_sheets,
+    recommend_transaction_sheet,
+)
 from ui import common
 from ui.common import services
 
@@ -38,6 +42,44 @@ def _render_resume_controls(client_name: str) -> None:
                 st.rerun()
             else:
                 st.error("Could not restore that workspace.")
+
+
+def _render_sheet_picker(raw: bytes, sheets: list):
+    """The existing tab picker, defaulting to the *transaction* sheet.
+
+    Sheet 0 is often a summary / chart of accounts. With 2+ tabs the header
+    row of each tab is read and the one that looks like transaction detail
+    (AppFolio / QuickBooks shape, or Name/Payee/Memo plus Amount/Date) is
+    preselected. When two tabs both look like data, or none does, nothing is
+    preselected and Load stays disabled until the accountant chooses — the
+    summary tab is never silently coded as transactions.
+
+    Returns ``(sheet, chosen)``.
+    """
+    if len(sheets) == 1:
+        return st.selectbox("Which tab/sheet?", options=sheets, index=0), True
+
+    rec = recommend_transaction_sheet(raw, sheets)
+    index = rec.get("index")
+    n = len(sheets)
+    if index is not None:
+        st.caption(f"This file has {n} tabs. We picked the transaction sheet "
+                   f"(**{rec['sheet']}**) — change it if that is wrong.")
+    elif rec.get("data_sheets"):
+        st.caption(f"This file has {n} tabs and "
+                   f"{len(rec['data_sheets'])} look like transactions "
+                   f"({', '.join(rec['data_sheets'])}). Choose the one to "
+                   "code — nothing is loaded until you do.")
+    else:
+        st.caption(f"This file has {n} tabs and none clearly holds transaction "
+                   "detail (a Name/Payee or Memo column plus Amount or Date). "
+                   "Choose the tab to code — nothing is loaded until you do.")
+    sheet = st.selectbox(
+        "Which tab/sheet?", options=sheets, index=index,
+        placeholder="Choose the transaction sheet…",
+        help="The first tab is often a summary or chart of accounts. Only "
+             "the tab you pick here is read as transactions.")
+    return sheet, sheet is not None
 
 
 def render_landing() -> None:
@@ -115,15 +157,19 @@ def render_landing() -> None:
             help=upload_help)
 
         sheet = 0
+        sheet_chosen = True
         if uploaded is not None:
             raw = uploaded.getvalue()
             is_csv = uploaded.name.lower().endswith(".csv")
             sheets = list_excel_sheets(raw) if not is_csv else []
             if sheets:
-                sheet = st.selectbox("Which tab/sheet?", options=sheets, index=0)
-            load_disabled = live and not client_name
+                sheet, sheet_chosen = _render_sheet_picker(raw, sheets)
+            load_disabled = (live and not client_name) or not sheet_chosen
             if st.button("Load & open spreadsheet", type="primary",
-                         width="stretch", disabled=load_disabled):
+                         width="stretch", disabled=load_disabled,
+                         help=(None if sheet_chosen else
+                               "Choose the tab that holds the transactions "
+                               "first.")):
                 try:
                     with st.spinner("Reading and analysing the file…"):
                         common.load_into_session(
