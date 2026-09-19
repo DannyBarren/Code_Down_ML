@@ -244,9 +244,21 @@ def auto_approve_threshold() -> float:
     return float(st.session_state[key])
 
 
+AUTO_THRESHOLD_WIDGET_KEYS = ("sidebar_auto_threshold", "review_auto_threshold")
+
+
 def set_auto_approve_threshold(value: float) -> float:
+    """Store the threshold and move every slider bound to it.
+
+    Called from a slider's ``on_change`` (before the script reruns), so it is
+    safe to write the other widget's key here; a keyed widget otherwise keeps
+    its own last value and the two sliders would drift apart.
+    """
     value = float(min(max(float(value), 0.5), 0.99))
     st.session_state["auto_approve_threshold"] = value
+    for key in AUTO_THRESHOLD_WIDGET_KEYS:
+        if key in st.session_state:
+            st.session_state[key] = value
     return value
 
 
