@@ -230,6 +230,34 @@ def model_manager_for(client_id: Optional[str] = None):
     return _CLIENT_MODEL_MANAGERS[cid]
 
 
+def auto_approve_threshold() -> float:
+    """The session's auto-approve threshold (default: config cutoff, 0.85).
+
+    Rows a run proposes at or above this confidence are written automatically
+    and learned; collisions and seed-disagreement never are. Persisted in
+    session state so it survives reruns and is honoured by every run.
+    """
+    config = services()[0]
+    key = "auto_approve_threshold"
+    if key not in st.session_state:
+        st.session_state[key] = float(config.confidence.auto_apply_cutoff)
+    return float(st.session_state[key])
+
+
+def set_auto_approve_threshold(value: float) -> float:
+    value = float(min(max(float(value), 0.5), 0.99))
+    st.session_state["auto_approve_threshold"] = value
+    return value
+
+
+def sync_auto_approve_threshold() -> float:
+    """Push the session threshold into the config the engines read."""
+    config = services()[0]
+    thr = auto_approve_threshold()
+    config.confidence.auto_apply_cutoff = thr
+    return thr
+
+
 def make_engine() -> FillDownEngine:
     config, storage, rules, mm, _ = services()
     client_id = current_client_id()
@@ -242,6 +270,7 @@ def make_engine() -> FillDownEngine:
         client_id=client_id,
         blocked_lookup=storage.get_blocked_lookup(client_id=client_id),
         fallback_model_manager=mm if client_mm is not None else None,
+        collision_lookup=storage.get_collision_lookup(client_id=client_id),
     )
 
 
@@ -261,6 +290,7 @@ def make_hybrid_engine() -> FillDownEngine:
         mode="similarity_only",
         client_id=client_id,
         blocked_lookup=storage.get_blocked_lookup(client_id=client_id),
+        collision_lookup=storage.get_collision_lookup(client_id=client_id),
     )
 
 

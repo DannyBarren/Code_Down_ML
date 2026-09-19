@@ -7,7 +7,7 @@ import streamlit as st
 from src import dependencies as deps
 from src.data_loader import SIM_TEXT_COL
 from src.similarity import semantic_backend_available
-from ui import setup
+from ui import common, setup
 from ui.common import services
 
 
@@ -65,10 +65,17 @@ def render_sidebar() -> None:
                 "Similarity threshold", 0.30, 0.99,
                 float(config.similarity.similarity_threshold), 0.01,
                 help="Higher values require transactions to look more alike.")
-            config.confidence.auto_apply_cutoff = st.slider(
-                "Auto-fill confidence", 0.50, 0.99,
-                float(config.confidence.auto_apply_cutoff), 0.01,
-                help="Fill automatically only at or above this confidence.")
+            st.slider(
+                "Auto-approve confidence", 0.50, 0.99,
+                common.auto_approve_threshold(), 0.01,
+                key="sidebar_auto_threshold",
+                on_change=lambda: common.set_auto_approve_threshold(
+                    st.session_state["sidebar_auto_threshold"]),
+                help="Rows proposed at or above this confidence are written "
+                     "and remembered automatically on a run. Collisions and "
+                     "disagreeing seeds never are. Same setting as on the "
+                     "Review page.")
+            common.sync_auto_approve_threshold()
             config.confidence.review_cutoff = st.slider(
                 "Send-to-review threshold", 0.10, 0.95,
                 float(config.confidence.review_cutoff), 0.01,
