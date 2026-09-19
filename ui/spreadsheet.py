@@ -165,6 +165,7 @@ def _do_start_fresh() -> None:
     _, storage, rules, *_ = common.services()
     rules.clear_rules()
     storage.clear_learned_mappings()
+    storage.clear_collisions()
     storage.clear_rule_notes()
     common.reset_file_session()
     common.set_flash("Cleared rules, learned mappings and Rule Notes. "
@@ -1052,16 +1053,24 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
             progress.progress(min(max(frac, 0.0), 1.0), text=msg)
 
         try:
+            threshold = common.sync_auto_approve_threshold()
+            client_id = common.current_client_id()
             with st.spinner("Running the full automation…"):
                 result = sh.run_full(work, loaded, config, common.make_engine(),
                                      progress_cb=cb)
             st.session_state["last_result"] = result
             _record_run(result, storage)
+            # Auto-approved rows learn through the same path as Keep, so the
+            # other accountant on the live URL benefits.
+            auto = sh.auto_approve_learn(work, loaded, storage, config,
+                                         threshold=threshold,
+                                         client_id=client_id)
             progress.progress(1.0, text="Done.")
             counts = sh.summary_counts(work, loaded)
             msg = (f"Filled {counts['filled']:,} transactions "
                    f"({counts['auto_filled']:,} automatically). "
-                   f"{counts['review_pending']:,} rows that need you.")
+                   f"{counts['review_pending']:,} rows that need you. "
+                   + sh.auto_approve_message(auto))
             note = common.value_note(counts)
             if note:
                 msg += f"  {note}."
@@ -1168,9 +1177,13 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
             progress.progress(min(max(frac, 0.0), 1.0), text=msg)
 
         try:
+            threshold = common.sync_auto_approve_threshold()
             n, audit = sh.run_rules_hybrid(
                 work, rules, loaded, config, common.make_hybrid_engine(),
                 indices=indices, client_id=client_id, progress_cb=hybrid_cb)
+            auto = sh.auto_approve_learn(work, loaded, storage, config,
+                                         threshold=threshold,
+                                         client_id=client_id)
             progress.progress(1.0, text="Done.")
         except Exception as exc:  # noqa: BLE001
             st.error(f"The rule run did not complete: {exc}")
@@ -1178,6 +1191,7 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
             return
         audit["scoped"] = bool(sel)
         audit["applied"] = n
+        audit["auto_approved"] = auto["auto_approved"]
         st.session_state["last_rule_audit"] = audit
         _bump()
         kw, sem = audit["keyword_filled"], audit["semantic_filled"]
@@ -1185,7 +1199,7 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
                f"semantic similarity. Confidence — {audit['conf_high']:,} high, "
                f"{audit['conf_medium']:,} medium, {audit['conf_low']:,} low "
                f"(review these). {audit['protected_existing']:,} already coded "
-               "(protected).")
+               f"(protected). {sh.auto_approve_message(auto)}")
         pbm = audit.get("protected_but_matched", 0)
         if n == 0 and pbm:
             msg += (f"  Note: your rules matched {pbm} already-coded row(s) — "
