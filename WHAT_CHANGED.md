@@ -3,6 +3,23 @@
 Branch: `cursor/demo-railway-live-ingest-collisions-8d34` → PR into
 `demo/railway-live` only. Nothing touches `main`.
 
+## Verification pass — 2026-10-08
+
+The 2026-09-19 commits on this branch were re-checked against the brief from
+a clean environment rather than taken on trust. Everything below was
+confirmed to be real: the suite collects and passes, the six behaviours are
+implemented, `utils/account_codes.py` is byte-identical to the target branch,
+`models/schemas.py` still has exactly the five `FillAction` values (collisions
+ride `NEEDS_REVIEW` + `engine_used="collision"`), `tests/fixtures/
+chrysalis_like.csv` is untouched so the `protected_existing == 187` lock
+holds, no real client ledger is tracked, and the claimed 271 → 305 test
+counts are accurate.
+
+One real gap was found and fixed: `FillDownEngine.run` had a learned-memory
+carve-out that let a collision-keyed blank row auto-fill in the memory modes.
+The brief forbids that in every mode, so it was removed (see Edit B). That is
+the only behavioural change in this pass.
+
 ## Where this started
 
 `origin/demo/railway-live-opus-reliability` (`e548093`, PR #7 draft) was
@@ -54,11 +71,14 @@ alone.
   `NEEDS_REVIEW` + `engine_used="collision"` + rationale
   `Collision: this vendor/memo also codes to 6326 and 6760.01 …`.
   `FillResult.status == "collision"`, counted in `pure_rule_audit`.
-* One deliberate allowance: an **exact learned-memory** match still fills a
-  collision-keyed row in memory modes. That mapping only exists because the
-  accountant already Kept/Fixed this exact row shape, so it is her decision
-  being replayed, not a guess. Strict never uses memory, so Strict still
-  escalates.
+* **No exceptions.** Nothing fills a collision-keyed blank row — not a rule,
+  not learned memory, not similarity, not ML, not at 0.99. An earlier draft
+  of this branch let an exact learned-memory match fill one in the memory
+  modes; that carve-out was removed, because the brief says collisions never
+  auto-fill in Strict, fuzzy, regex or Full Intelligent. When she *has*
+  decided that exact row before, the code is appended to the why-text
+  ("You coded this exact transaction '6760.01' before.") as context for her
+  Fix, but the cell still stays blank.
 * Review card: `:red-background[Collision]` badge + "This vendor already
   maps to more than one account: 6326 and 6760.01." above the unchanged
   Keep / Fix / Not this. Keep is disabled (no suggestion). Fix learns via
@@ -135,15 +155,20 @@ client-name spelling, one `/data` volume — unchanged.
 * No `FillAction.COLLISION` enum, no schema changes in `models/schemas.py`.
 * No exporter change.
 * `chrysalis_like.csv` not extended (see Edit E).
-* Fix on a collision does not delete the stored collision key. The learned
-  mapping now carries the answer in memory modes; Strict still escalates the
-  vendor until a rule says otherwise. Deleting keys automatically would let
-  one Fix silence a real two-account vendor.
+* Fix on a collision does not delete the stored collision key, so the vendor
+  keeps escalating until she gives it a single mapping. Deleting keys
+  automatically would let one Fix silence a real two-account vendor.
 * Strict runs do not call `auto_approve_learn` (see Edit C).
 
 ## Tests
 
-* Base: 271 passed. Now: **305 passed**, `python smoke_test.py` green.
+Counts below were re-run from a clean checkout of this branch on 2026-10-08
+(`pip install -r requirements.txt pytest`, Python 3.12.3):
+
+* `demo/railway-live` (`55b593c`, the PR target): **253 passed**.
+* `demo/railway-live-opus-reliability` (`e548093`, PR #7, this branch's base):
+  **271 passed**.
+* This branch: **305 passed**, `python smoke_test.py` green (51 checks).
 * New files: `tests/test_ingest_per_account.py`, `tests/test_collisions.py`,
   `tests/test_excel_sheets.py`, `tests/test_recall_fixtures.py`; two
   AppTest cases added to `tests/test_review_inbox_e2e.py` (collision badge +
