@@ -66,7 +66,12 @@ def test_keyword_source_order_name_then_memo_never_notes(
 
 
 def test_ingest_prefers_name_then_memo(make_loaded, rules, config):
-    """Ingested exact rules key on Name first, then Memo — never Notes."""
+    """Ingested rules key on Name first, then Memo — never Notes.
+
+    Ingest is one rule per GL account: both coded rows share ``6322``, so they
+    become ONE rule whose phrase list carries the vendor Name first and the
+    Memo terms after it (a row with no Name contributes its Memo only).
+    """
     loaded = make_loaded([
         {"Name": "Cunningham Communications", "Memo": "call center",
          "Notes": "coach note", "New Account": "6322"},
@@ -76,11 +81,14 @@ def test_ingest_prefers_name_then_memo(make_loaded, rules, config):
     created = rules.ingest_existing_new_account_as_rules(
         loaded.df,
         source_text_cols=sh.mining_columns(loaded.df, loaded, config))
-    assert created == 2
-    keywords = {r.keyword for r in rules.list_rules()}
-    assert "Cunningham Communications" in keywords      # from Name
-    assert "Answering Service LLC" in keywords          # from Memo (Name blank)
-    assert all("note" not in k.lower() for k in keywords)
+    assert created == 1                                  # one account -> one rule
+    (rule,) = rules.list_rules()
+    phrases = rule.match_phrases()
+    assert phrases[0] == "Cunningham Communications"    # from Name, first
+    assert "Answering Service LLC" in phrases           # from Memo (Name blank)
+    assert "call center" in phrases                     # Memo term, after Names
+    assert all("note" not in p.lower() for p in phrases)
+    assert "Notes" not in rule.fields                   # Notes never searched
 
 
 def test_rule_preview_counts_blanks_only_for_fill_but_reports_protected_hits(

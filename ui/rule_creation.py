@@ -174,7 +174,7 @@ def render_memory_bootstrap_banner(work, loaded, rules_manager, storage,
     if engines - {"", "seed"}:
         return
 
-    client_id = st.session_state.get("client_name") or None
+    client_id = common.current_client_id()
     n_rules = len(rules_manager.list_rules(enabled_only=True,
                                            client_id=client_id))
     n_memory = len(storage.list_learned_mappings(client_id=client_id))
@@ -209,6 +209,7 @@ def render_memory_bootstrap_banner(work, loaded, rules_manager, storage,
             common.set_flash(
                 "No blank rows matched a remembered code exactly. Run Rules — "
                 "Strict next, or Full Intelligent for broader matching.")
+        common.persist_workspace()
         st.rerun()
     if c2.button("Dismiss", width="stretch", key="bootstrap_dismiss"):
         st.session_state["memory_bootstrap_dismissed"] = True
@@ -216,43 +217,69 @@ def render_memory_bootstrap_banner(work, loaded, rules_manager, storage,
 
 
 def render_ingest_banner(work, loaded, rules_manager, storage, config) -> None:
-    """One-click ingest of pre-filled rows as exact rules (Name → Memo → …)."""
+    """One-click ingest: one rule per GL account (Name → Memo, never Notes)."""
     if st.session_state.get("ingest_banner_dismissed"):
         return
     from src.data_loader import summarize_upload
     stats = summarize_upload(work, loaded.new_account_col)
     if stats["prefilled"] <= 0:
         return
+    n_accounts = int(work[loaded.new_account_col].astype(str).str.strip()
+                     .replace("", None).dropna().nunique())
 
     st.markdown(
         f"<div class='pc-seed-banner'>"
-        f"<strong>{stats['prefilled']:,} coded example"
-        f"{'s' if stats['prefilled'] != 1 else ''}</strong> found in this "
-        f"file. Turn them into exact-match rules in one click — they fill "
-        f"identical transactions now and on every future file."
+        f"<strong>{stats['prefilled']:,} coded row"
+        f"{'s' if stats['prefilled'] != 1 else ''} across {n_accounts:,} "
+        f"account{'s' if n_accounts != 1 else ''}</strong> found in this file. "
+        f"Ingest builds <strong>one rule per account</strong> with every vendor "
+        f"name on that account already listed (memo terms second). A vendor "
+        f"coded two ways is held back for Review instead."
         f"</div>",
         unsafe_allow_html=True,
     )
     c1, c2, c3 = st.columns([1.8, 1.2, 4])
-    if c1.button("Ingest as exact rules", type="primary", width="stretch",
+    if c1.button("Ingest as rules", type="primary", width="stretch",
                  key="banner_ingest_exact",
-                 help="Creates one high-priority exact-match rule per coded "
-                      "row, keyed on Name, then Memo, then Description. "
-                      "Review them anytime in the Rules panel."):
-        client_id = st.session_state.get("client_name") or None
+                 help="One rule per GL account, not one per row: every "
+                      "distinct Name coded to that account, then every Memo "
+                      "term. Name wins at match time; Memo only when Name is "
+                      "empty or unknown. Notes are never read. Re-ingesting a "
+                      "later file merges new vendors into the same rule."):
+        client_id = common.current_client_id()
         source_cols = sh.mining_columns(work, loaded, config)
-        created = rules_manager.ingest_existing_new_account_as_rules(
+        report = rules_manager.ingest_rules_per_account(
             work, client_id=client_id, source_text_cols=source_cols)
         st.session_state["ingest_banner_dismissed"] = True
-        common.set_flash(
-            f"Ingested {created} exact rule(s) from your coded rows. Run "
-            "Rules — Strict to apply them."
-            if created else
-            "Those coded rows are already covered by existing rules.")
+        common.set_flash(_ingest_flash(report))
         st.rerun()
     if c2.button("Dismiss", width="stretch", key="banner_ingest_dismiss"):
         st.session_state["ingest_banner_dismissed"] = True
         st.rerun()
+
+
+def _ingest_flash(report) -> str:
+    """Accountant-readable summary of an ingest pass."""
+    parts = []
+    if report.rules_created:
+        parts.append(f"created {report.rules_created} rule(s)")
+    if report.rules_updated:
+        parts.append(f"extended {report.rules_updated} existing rule(s)")
+    if not parts:
+        msg = ("Every vendor on every account is already on a rule — "
+               "nothing to add.")
+    else:
+        msg = (f"Ingested {' and '.join(parts)} — one per account, "
+               f"{report.phrases_added:,} vendor/memo phrase(s) in total. "
+               "Run Rules — Strict to apply them.")
+    if report.collisions:
+        names = list(report.collisions)
+        shown = ", ".join(f"'{k}' ({' / '.join(v)})"
+                          for k, v in list(report.collisions.items())[:3])
+        more = f" and {len(names) - 3} more" if len(names) > 3 else ""
+        msg += (f" Held back {len(names)} vendor(s) that code to more than "
+                f"one account: {shown}{more}. Those rows go to Review.")
+    return msg
 
 
 def render_seed_suggestion_banner(work, loaded, rules_manager) -> None:

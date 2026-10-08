@@ -19,7 +19,7 @@ import shutil
 from pathlib import Path
 from typing import Dict
 
-from src.config import Config, demo_reset_enabled, is_demo
+from src.config import Config, demo_reset_enabled, is_demo, is_live
 from utils.logging_setup import get_logger
 from utils.storage import Storage
 
@@ -90,7 +90,7 @@ def maybe_auto_reset(config: Config, storage: Storage,
     (the bootstrap that calls this is itself cached once per process).
     """
     global _RESET_DONE
-    if _RESET_DONE or not demo_reset_enabled():
+    if _RESET_DONE or is_live() or not demo_reset_enabled():
         return False
     reset_for_demo(config, storage, model_manager)
     _RESET_DONE = True
@@ -100,6 +100,6 @@ def maybe_auto_reset(config: Config, storage: Storage,
 
 def force_reset(config: Config, storage: Storage, model_manager=None) -> Dict[str, int]:
     """Manual 'Reset Demo Data' button — always resets (when in demo)."""
-    if not is_demo():
+    if not is_demo() or is_live():
         return {}
     return reset_for_demo(config, storage, model_manager)

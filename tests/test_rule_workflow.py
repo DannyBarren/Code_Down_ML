@@ -213,9 +213,12 @@ def test_ingest_prefilled_creates_exact_high_priority_rules(make_loaded, rules):
     loaded = make_loaded(_sample_records())
     created = rules.ingest_existing_new_account_as_rules(
         loaded.df, source_text_col="Description")
-    assert created == 2  # two coded rows
+    assert created == 2  # two coded rows on two accounts -> two rules
     ingested = rules.list_rules()
-    assert all(r.match_type == "exact" for r in ingested)
+    # One rule per account, ``contains`` so "lease fee" also hits
+    # "August lease fee — unit 12"; still high priority so they win over
+    # broad manual rules.
+    assert all(r.match_type == "contains" for r in ingested)
     assert all(r.priority == 10 for r in ingested)
     codes = {r.account_code for r in ingested}
     assert {"6618S", "6200"} <= codes
