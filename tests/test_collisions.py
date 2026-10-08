@@ -238,8 +238,9 @@ def test_fix_on_collision_learns_and_not_this_blocks_without_learning(
     assert len(storage.list_learned_mappings(client_id="swann")) == before
     assert work.at[2, NEW_ACCOUNT_COL] == ""
 
-    # Next month: the exact transaction she Fixed fills from memory (her
-    # decision, not a guess); an unseen Lakeside row still escalates.
+    # Next month: the vendor still collides, so NOTHING fills it — not even
+    # the exact row she Fixed. Learned memory is shown as context on the card
+    # but the cell stays blank until she resolves the vendor.
     again = make_loaded(_blank_rows())
     engine = FillDownEngine(
         config, rules, client_id="swann",
@@ -247,8 +248,13 @@ def test_fix_on_collision_learns_and_not_this_blocks_without_learning(
         blocked_lookup=storage.get_blocked_lookup(client_id="swann"),
         collision_lookup=storage.get_collision_lookup(client_id="swann"))
     res = engine.run(again)
-    assert res.results[0].engine_used == "learned"
-    assert res.df.iloc[0][again.new_account_col] == "6760.01"
+    assert res.results[0].engine_used == "collision"
+    assert res.results[0].action == FillAction.NEEDS_REVIEW
+    assert res.df.iloc[0][again.new_account_col] == ""
+    # Her earlier decision is surfaced in the why-text, alongside both codes.
+    why = res.results[0].rationale
+    assert "6326" in why and "6760.01" in why
+    assert "coded this exact transaction '6760.01' before" in why
     unseen = make_loaded([{"Name": "Lakeside Hardware", "Memo": "new thing",
                            "Amount": "1.00", "New Account": ""}])
     res = engine.run(unseen)
