@@ -230,6 +230,46 @@ def model_manager_for(client_id: Optional[str] = None):
     return _CLIENT_MODEL_MANAGERS[cid]
 
 
+def auto_approve_threshold() -> float:
+    """The session's auto-approve threshold (default: config cutoff, 0.85).
+
+    Rows a run proposes at or above this confidence are written automatically
+    and learned; collisions and seed-disagreement never are. Persisted in
+    session state so it survives reruns and is honoured by every run.
+    """
+    config = services()[0]
+    key = "auto_approve_threshold"
+    if key not in st.session_state:
+        st.session_state[key] = float(config.confidence.auto_apply_cutoff)
+    return float(st.session_state[key])
+
+
+AUTO_THRESHOLD_WIDGET_KEYS = ("sidebar_auto_threshold", "review_auto_threshold")
+
+
+def set_auto_approve_threshold(value: float) -> float:
+    """Store the threshold and move every slider bound to it.
+
+    Called from a slider's ``on_change`` (before the script reruns), so it is
+    safe to write the other widget's key here; a keyed widget otherwise keeps
+    its own last value and the two sliders would drift apart.
+    """
+    value = float(min(max(float(value), 0.5), 0.99))
+    st.session_state["auto_approve_threshold"] = value
+    for key in AUTO_THRESHOLD_WIDGET_KEYS:
+        if key in st.session_state:
+            st.session_state[key] = value
+    return value
+
+
+def sync_auto_approve_threshold() -> float:
+    """Push the session threshold into the config the engines read."""
+    config = services()[0]
+    thr = auto_approve_threshold()
+    config.confidence.auto_apply_cutoff = thr
+    return thr
+
+
 def make_engine() -> FillDownEngine:
     config, storage, rules, mm, _ = services()
     client_id = current_client_id()
@@ -242,6 +282,7 @@ def make_engine() -> FillDownEngine:
         client_id=client_id,
         blocked_lookup=storage.get_blocked_lookup(client_id=client_id),
         fallback_model_manager=mm if client_mm is not None else None,
+        collision_lookup=storage.get_collision_lookup(client_id=client_id),
     )
 
 
@@ -261,7 +302,33 @@ def make_hybrid_engine() -> FillDownEngine:
         mode="similarity_only",
         client_id=client_id,
         blocked_lookup=storage.get_blocked_lookup(client_id=client_id),
+        collision_lookup=storage.get_collision_lookup(client_id=client_id),
     )
+
+
+class RowCapExceeded(RuntimeError):
+    """Upload is larger than ``FILLDOWN_MAX_ROWS`` on a hosted instance.
+
+    Live must never silently truncate: the accountant would export a short
+    book and lose the tail of the month without being told.
+    """
+
+
+def row_cap_refusal(n_rows: int) -> Optional[str]:
+    """Accountant-readable refusal when a live upload is over the row cap.
+
+    ``None`` means the file is allowed (it fits, there is no cap, or this is
+    a demo/local run where truncating to a preview is the documented
+    behaviour). Live never truncates — a short book is silent data loss.
+    """
+    cap = demo_max_rows()
+    if not cap or n_rows <= cap or not live_mode():
+        return None
+    return (
+        f"This file has {n_rows:,} rows and this instance is capped at "
+        f"{cap:,}. Nothing was loaded, so no transactions were dropped. "
+        "Split the export into smaller periods and use Add another export "
+        "to build the month up, or ask your admin to raise FILLDOWN_MAX_ROWS.")
 
 
 def load_into_session(raw: bytes, name: str, ext: str, sheet=0) -> None:
@@ -270,8 +337,13 @@ def load_into_session(raw: bytes, name: str, ext: str, sheet=0) -> None:
     loaded = load_dataframe(raw, config, source_name=name, sheet_name=sheet)
     cap = demo_max_rows()
     if cap and len(loaded.df) > cap:
+        refusal = row_cap_refusal(len(loaded.df))
+        if refusal:
+            raise RowCapExceeded(refusal)
         loaded.df = loaded.df.head(cap).reset_index(drop=True)
-        set_flash(f"Demo limit: showing the first {cap:,} rows of this file.")
+        limit_label = "Demo limit" if demo_mode() else "Row cap"
+        set_flash(f"{limit_label}: loaded the first {cap:,} rows of this file. "
+                  "Only these rows will export.")
     st.session_state["loaded"] = loaded
     st.session_state["work_df"] = sh.build_work_df(loaded, storage, config)
     st.session_state["original_bytes"] = raw

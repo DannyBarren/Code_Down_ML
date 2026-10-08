@@ -37,16 +37,20 @@ def render_review() -> None:
 
     client_id = common.current_client_id()
     counts = sh.summary_counts(work, loaded)
+    threshold = common.sync_auto_approve_threshold()
 
     head = st.columns([3.4, 2])
     client = client_id or ""
     head[0].markdown("### Review" + (f" — {client}" if client else ""))
     head[0].caption(
         f"{loaded.source_name} · {counts['review_pending']:,} leftover(s) "
-        f"need a decision · {counts['blank']:,} still blank")
+        f"need a decision · {counts['blank']:,} still blank · "
+        f"{counts['auto_filled']:,} auto-approved at or above "
+        f"{int(round(threshold * 100))}%")
     if head[1].button("← Back to spreadsheet", width="stretch"):
         st.session_state["view"] = "spreadsheet"
         st.rerun()
+    _render_threshold_control()
 
     st.session_state.setdefault("review_include_no_match", False)
     include_no_match = st.toggle(
@@ -101,6 +105,30 @@ def render_review() -> None:
 
     if st.session_state.get("rule_panel_open"):
         rc.rule_creation_dialog(work, loaded, config, rules, storage)
+
+
+def _render_threshold_control() -> None:
+    """Auto-approve threshold (default 85%). Shared with the sidebar slider.
+
+    Rows a run proposes at or above this confidence are written and
+    remembered automatically. Collisions and disagreeing seeds never are.
+    """
+    with st.expander(
+            f"Auto-approve at or above "
+            f"{int(round(common.auto_approve_threshold() * 100))}%",
+            expanded=False):
+        st.slider(
+            "Auto-approve confidence", 0.50, 0.99,
+            common.auto_approve_threshold(), 0.01,
+            key="review_auto_threshold",
+            on_change=lambda: common.set_auto_approve_threshold(
+                st.session_state["review_auto_threshold"]),
+            help="On the next run, rows proposed at or above this confidence "
+                 "are written to New Account and remembered — the same as "
+                 "Keep. Existing codes are never overwritten. Vendors that "
+                 "map to more than one account (collisions) and rows whose "
+                 "seeds disagree always wait here for you.")
+        common.sync_auto_approve_threshold()
 
 
 def _render_empty_queue(counts: dict) -> None:
@@ -204,6 +232,14 @@ def _render_inbox_row(work, loaded, storage, config, client_id,
         f"Row {idx + 1} · "
         + (" | ".join(label_bits)[:90] if label_bits else "leftover")
         + (f" → **{suggested}**" if suggested else " — no suggestion yet"))
+    collision = sh.is_collision_row(work, idx)
+    if collision:
+        codes = sh.collision_codes_for_row(
+            work, loaded, idx,
+            sh.collision_lookup_for(work, loaded, storage, client_id))
+        st.markdown(
+            ":red-background[**Collision**] " + sh.collision_badge_text(codes)
+            + " Fix it with the right code, or Not this to block them all.")
     why = str(rec.get("Why") or "").strip()
     if why:
         st.caption(why)

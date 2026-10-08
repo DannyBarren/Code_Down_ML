@@ -38,7 +38,7 @@ That directory holds:
 
 | Path | What |
 | --- | --- |
-| `/data/fill_down.db` | Rules, learned mappings, blocked pairings, training, account profiles, run history |
+| `/data/fill_down.db` | Rules, learned mappings, blocked pairings, collision keys, training, account profiles, run history |
 | `/data/models/` | Global + per-client LogReg weights (`clients/<safe_id>/`) |
 | `/data/work/` | Temp work files |
 | `/data/sessions/<safe_id>/` | Last coded workbook (`work_df.pkl` + original upload bytes) |
@@ -102,17 +102,33 @@ After the service is up:
 1. Open the URL. Log in with `FILLDOWN_AUTH_PASSWORD`.
 2. Set **Client / project name** to e.g. `Northwind Trading Co.`
 3. Upload `data/sample_transactions.csv` (or a real AppFolio / QuickBooks export).
+   An `.xlsx` with more than one tab preselects the transaction sheet (the
+   one whose headers read as AppFolio / QuickBooks, or Name/Payee/Memo plus
+   Amount/Date). If two tabs both look like data, pick one before **Load**
+   enables — a summary / COA tab is never coded by default.
 4. Confirm the source-profile chip: `Read as AppFolio…` / `Read as QuickBooks…`
    / `Generic export`.
-5. Click **Run Rules — Strict ★ (recommended)**.
-6. Approve one row in **Review**.
-7. Optionally **Add another export** (a second small file).
-8. Open **Insights** — cards render from the coded book.
-9. **Restart** the Railway service.
-10. Log in again. Type the same client name → **Resume last workspace**.
-11. Confirm:
+5. If the book already has coded rows, click **Ingest as rules**: one rule
+   per GL account, every vendor Name on that account listed, then Memo terms.
+   A vendor coded to two accounts is reported as a collision and left out.
+6. Click **Run Rules — Strict ★ (recommended)**.
+7. Open **Review** and decide one leftover. Strict makes no suggestions, so
+   the queue is blank rows: type an account and click **Fix**. (After a run
+   that does suggest — Rules + Memory, Similarity, Full — the same card
+   offers **Keep** and **Not this**.) A row marked **Collision** names the
+   competing codes; it is never auto-filled, in any mode, at any confidence.
+   **Fix** it once and memory carries the answer to the next file.
+8. **Auto-approve at or above N%** (Review page and sidebar, default 85%,
+   kept for the session): Full and Rules + Similarity runs write rows at or
+   above it and remember them exactly as **Keep** does. The flash reports
+   "Auto-approved N rows at or above X%. Review still has M."
+9. Optionally **Add another export** (a second small file).
+10. Open **Insights** — cards render from the coded book.
+11. **Restart** the Railway service.
+12. Log in again. Type the same client name → **Resume last workspace**.
+13. Confirm:
     - the workbook is back (filename + row count flash)
-    - the approved code is still there
+    - the code you kept / fixed is still there
     - rules / learned memory survived
     - Insights still render
     - **Add another export** still works
@@ -139,6 +155,17 @@ session folder. It never touches SQLite rules or models.
 deletes that client's *session files only*, not the knowledge base.
 
 **Reset demo data** is hidden in live mode.
+
+## 10. Two accountants, one memory
+
+One URL, one password, one `/data` volume, one SQLite. Two people coding the
+same client type the **same client-name spelling** and teach the same rules,
+learned mappings, blocked pairings, and collision keys. Every positive
+mapping — **Keep**, **Fix**, a rule created from a cell, or an auto-approved
+row — goes through `record_human_approval`, so what one accountant decides
+this morning fills the other's blanks this afternoon. **Not this** only
+blocks. There is no per-user memory and no second database; the workbook
+pickle is last-write-wins.
 
 ## Local vs this image
 
