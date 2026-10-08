@@ -39,7 +39,6 @@ from src.rules_manager import (
     RulesManager,
     collision_key_for_row,
     collision_rationale,
-    format_codes,
 )
 from src.similarity import Embedder, cosine_sim_matrix, group_transactions
 from utils.account_codes import normalize_code
@@ -255,33 +254,26 @@ class FillDownEngine:
                 ))
                 continue
 
-            # 1b) Collision: this vendor codes two ways. No rule, similarity
-            #     or ML fill — not at 0.99. Only an exact signature the
-            #     accountant already decided (learned memory, not blocked)
-            #     may fill; everything else escalates to Review.
+            # 1b) Collision: this vendor codes two ways. Nothing fills it —
+            #     no rule, no learned memory, no similarity, no ML, not at
+            #     0.99. It escalates to Review so she decides.
             if collisions:
                 key = collision_key_for_row(row, name_col, memo_col)
                 if key and key in collisions:
+                    why = collision_rationale(collisions[key])
                     remembered = self.learned_lookup.get(text)
                     code = normalize_code(remembered) if remembered else ""
                     if code and code not in self.blocked_lookup.get(text, set()):
-                        df.iat[i, na_loc] = code
-                        results.append(FillResult(
-                            row_index=i, original_value="", proposed_value=code,
-                            confidence=self.config.confidence.learned_match_confidence,
-                            source=FillSource.LEARNED, engine_used="learned",
-                            action=FillAction.AUTO_FILLED, group_id=group_id,
-                            rationale=("Learned exact match — you decided this "
-                                       "exact transaction before (vendor also "
-                                       f"codes to {format_codes(collisions[key])})."),
-                        ))
-                        continue
+                        # Context only — a prior decision on this exact row is
+                        # worth showing, but it still does not fill the cell.
+                        why += (f" You coded this exact transaction '{code}' "
+                                "before.")
                     results.append(FillResult(
                         row_index=i, original_value="", proposed_value=None,
                         confidence=0.0, source=FillSource.NONE,
                         engine_used=COLLISION_ENGINE,
                         action=FillAction.NEEDS_REVIEW, group_id=group_id,
-                        rationale=collision_rationale(collisions[key]),
+                        rationale=why,
                     ))
                     continue
 
