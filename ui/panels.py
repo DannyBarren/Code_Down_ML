@@ -130,7 +130,7 @@ def _render_ingest_prefilled(rules_manager) -> None:
             submitted = st.form_submit_button(
                 "Create reviewed rules", type="primary")
             if submitted:
-                client_id = st.session_state.get("client_name") or None
+                client_id = common.current_client_id()
                 created = 0
                 for code, phrases in entries:
                     phrases = (phrases or "").strip().strip(",").strip()

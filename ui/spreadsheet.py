@@ -165,6 +165,7 @@ def _do_start_fresh() -> None:
     _, storage, rules, *_ = common.services()
     rules.clear_rules()
     storage.clear_learned_mappings()
+    storage.clear_collisions()
     storage.clear_rule_notes()
     common.reset_file_session()
     common.set_flash("Cleared rules, learned mappings and Rule Notes. "
@@ -228,7 +229,7 @@ def _confirm_dialog(work, loaded, config, rules, storage) -> None:
 
     elif kind == "start_fresh":
         if common.live_mode():
-            client = (st.session_state.get("client_name") or "").strip()
+            client = (common.current_client_id() or "").strip()
             st.warning(
                 "**Start fresh** on this hosted instance deletes this "
                 "client's *saved workspace files* and unloads the file. "
@@ -595,7 +596,7 @@ def _engine_status_text() -> str:
 
 def _render_header(loaded, counts: dict) -> None:
     """Compact, single-strip header so the grid owns the viewport."""
-    client = st.session_state.get("client_name") or ""
+    client = common.current_client_id() or ""
     title = "Spreadsheet" + (f" — {client}" if client else "")
     head = st.columns([3.2, 2.8])
     head[0].markdown(f"### {title}")
@@ -1000,7 +1001,7 @@ def _code_suggestions(work, na_col) -> list:
 
 def _commit_with_undo(work, edited, loaded, storage, config, rules) -> None:
     pre = sh.snapshot(work)
-    client_id = st.session_state.get("client_name") or None
+    client_id = common.current_client_id()
     counts = sh.commit_editor_changes(work, edited, loaded, storage, config,
                                       client_id=client_id)
     if counts.get("targets") or counts.get("notes"):
@@ -1052,16 +1053,24 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
             progress.progress(min(max(frac, 0.0), 1.0), text=msg)
 
         try:
+            threshold = common.sync_auto_approve_threshold()
+            client_id = common.current_client_id()
             with st.spinner("Running the full automation…"):
                 result = sh.run_full(work, loaded, config, common.make_engine(),
                                      progress_cb=cb)
             st.session_state["last_result"] = result
             _record_run(result, storage)
+            # Auto-approved rows learn through the same path as Keep, so the
+            # other accountant on the live URL benefits.
+            auto = sh.auto_approve_learn(work, loaded, storage, config,
+                                         threshold=threshold,
+                                         client_id=client_id)
             progress.progress(1.0, text="Done.")
             counts = sh.summary_counts(work, loaded)
             msg = (f"Filled {counts['filled']:,} transactions "
                    f"({counts['auto_filled']:,} automatically). "
-                   f"{counts['review_pending']:,} rows that need you.")
+                   f"{counts['review_pending']:,} rows that need you. "
+                   + sh.auto_approve_message(auto))
             note = common.value_note(counts)
             if note:
                 msg += f"  {note}."
@@ -1088,7 +1097,7 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
         common.push_undo()
         sel = sh.selected_indices(work)
         indices = sel if sel else None
-        client_id = st.session_state.get("client_name") or None
+        client_id = common.current_client_id()
         n, results = sh.run_selected_rules_audited(
             work, rules, loaded, config, indices=indices, client_id=client_id)
         audit = sh.pure_rule_audit(results, config)
@@ -1124,7 +1133,7 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
     # Rules + Memory — strict rules, then exact matches approved before.
     # Deterministic (no similarity, no AI), blank-only, fully audited.
     if actions.get("run_memory"):
-        client_id = st.session_state.get("client_name") or None
+        client_id = common.current_client_id()
         if not rules.list_rules(enabled_only=True) \
                 and not storage.get_learned_lookup(client_id=client_id):
             common.set_flash(
@@ -1161,16 +1170,20 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
         common.push_undo()
         sel = sh.selected_indices(work)
         indices = sel if sel else None
-        client_id = st.session_state.get("client_name") or None
+        client_id = common.current_client_id()
         progress = st.progress(0.0, text="Applying rules…")
 
         def hybrid_cb(frac, msg):
             progress.progress(min(max(frac, 0.0), 1.0), text=msg)
 
         try:
+            threshold = common.sync_auto_approve_threshold()
             n, audit = sh.run_rules_hybrid(
                 work, rules, loaded, config, common.make_hybrid_engine(),
                 indices=indices, client_id=client_id, progress_cb=hybrid_cb)
+            auto = sh.auto_approve_learn(work, loaded, storage, config,
+                                         threshold=threshold,
+                                         client_id=client_id)
             progress.progress(1.0, text="Done.")
         except Exception as exc:  # noqa: BLE001
             st.error(f"The rule run did not complete: {exc}")
@@ -1178,6 +1191,7 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
             return
         audit["scoped"] = bool(sel)
         audit["applied"] = n
+        audit["auto_approved"] = auto["auto_approved"]
         st.session_state["last_rule_audit"] = audit
         _bump()
         kw, sem = audit["keyword_filled"], audit["semantic_filled"]
@@ -1185,7 +1199,7 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
                f"semantic similarity. Confidence — {audit['conf_high']:,} high, "
                f"{audit['conf_medium']:,} medium, {audit['conf_low']:,} low "
                f"(review these). {audit['protected_existing']:,} already coded "
-               "(protected).")
+               f"(protected). {sh.auto_approve_message(auto)}")
         pbm = audit.get("protected_but_matched", 0)
         if n == 0 and pbm:
             msg += (f"  Note: your rules matched {pbm} already-coded row(s) — "
@@ -1215,7 +1229,7 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
     # Approve selected.
     if actions.get("approve"):
         common.push_undo()
-        client_id = st.session_state.get("client_name") or None
+        client_id = common.current_client_id()
         out = sh.approve_rows(work, loaded, storage, config,
                               client_id=client_id)
         _bump()
@@ -1247,7 +1261,7 @@ def _handle_actions(actions, work, loaded, config, rules, storage, mm, logger) -
 # --------------------------------------------------------------------------- #
 def _record_run(result, storage) -> None:
     try:
-        client = st.session_state.get("client_name") or ""
+        client = common.current_client_id() or ""
         if client:
             result.summary.file_name = f"{client}: {result.summary.file_name}"
         storage.add_run(result.summary)
@@ -1286,7 +1300,7 @@ def _export_dialog(work, loaded, counts: dict) -> None:
     import re as _re
     from datetime import datetime as _dt
     client_slug = _re.sub(r"[^A-Za-z0-9]+", "_",
-                          st.session_state.get("client_name") or "").strip("_")
+                          common.current_client_id() or "").strip("_")
     date_slug = _dt.now().strftime("%Y%m%d")
     prefix = "_".join(p for p in (client_slug, stem, date_slug) if p)
 
