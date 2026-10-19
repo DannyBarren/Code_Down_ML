@@ -18,9 +18,12 @@ env/
 *.db
 *.sqlite
 *.db-journal
+*.db-wal
+*.db-shm
 data/*.log
 data/work/
 data/uploads/
+data/sessions/
 
 # Model artifacts — retrained from approvals, never committed
 *.pkl

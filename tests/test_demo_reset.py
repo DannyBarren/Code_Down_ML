@@ -10,9 +10,11 @@ from utils import demo_utils
 # Detection
 # --------------------------------------------------------------------------- #
 def test_is_demo_false_by_default(monkeypatch):
-    for var in ("FILLDOWN_DEMO", "SPACE_ID", "HF_SPACE_ID", "FILLDOWN_DEMO_RESET"):
+    for var in ("FILLDOWN_DEMO", "SPACE_ID", "HF_SPACE_ID", "FILLDOWN_DEMO_RESET",
+                "FILLDOWN_LIVE"):
         monkeypatch.delenv(var, raising=False)
     assert cfg_mod.is_demo() is False
+    assert cfg_mod.is_live() is False
     assert cfg_mod.demo_reset_enabled() is False
 
 
@@ -100,3 +102,49 @@ def test_maybe_auto_reset_only_runs_in_demo(config, storage, rules, monkeypatch,
     assert demo_utils.maybe_auto_reset(config, storage) is False
 
     demo_utils._RESET_DONE = False  # reset module state for other tests
+
+
+# --------------------------------------------------------------------------- #
+# Live wins over public demo
+# --------------------------------------------------------------------------- #
+def test_is_live_via_flag(monkeypatch):
+    monkeypatch.delenv("FILLDOWN_DEMO", raising=False)
+    monkeypatch.setenv("FILLDOWN_LIVE", "1")
+    assert cfg_mod.is_live() is True
+    assert cfg_mod.demo_reset_enabled() is False
+
+
+def test_live_wins_over_demo_reset(monkeypatch):
+    monkeypatch.setenv("FILLDOWN_LIVE", "1")
+    monkeypatch.setenv("FILLDOWN_DEMO", "1")
+    monkeypatch.setenv("FILLDOWN_DEMO_RESET", "1")
+    assert cfg_mod.is_demo() is True
+    assert cfg_mod.is_live() is True
+    assert cfg_mod.demo_reset_enabled() is False
+
+
+def test_demo_reset_enabled_false_when_live(monkeypatch):
+    monkeypatch.setenv("FILLDOWN_LIVE", "true")
+    monkeypatch.setenv("FILLDOWN_DEMO", "yes")
+    assert cfg_mod.demo_reset_enabled() is False
+
+
+def test_maybe_auto_reset_does_not_wipe_when_live(config, storage, rules,
+                                                 monkeypatch, tmp_path):
+    config.data_dir = str(tmp_path)
+    demo_utils._RESET_DONE = False
+    monkeypatch.setenv("FILLDOWN_DEMO", "1")
+    monkeypatch.setenv("FILLDOWN_LIVE", "1")
+    rules.add_rule("keep me", "6618S")
+
+    assert demo_utils.maybe_auto_reset(config, storage) is False
+    assert [r.keyword for r in rules.list_rules()] == ["keep me"]
+
+    demo_utils._RESET_DONE = False
+
+
+def test_is_railway_does_not_imply_live(monkeypatch):
+    monkeypatch.delenv("FILLDOWN_LIVE", raising=False)
+    monkeypatch.setenv("RAILWAY_ENVIRONMENT", "production")
+    assert cfg_mod.is_railway() is True
+    assert cfg_mod.is_live() is False

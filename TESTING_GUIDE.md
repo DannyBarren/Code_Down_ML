@@ -41,8 +41,14 @@ What's covered:
 | **Spreadsheet helpers** | `tests/test_spreadsheet_helpers.py` | `work_df` build, Rule-Notes folding + persistence, runs, manual edits, bulk approve, rule preview, filters, pagination, undo/redo |
 | **Production hardening** | `tests/test_production_hardening.py` | keyword source order (never Notes), honest rule previews, token-aware fuzzy, seed-disagreement → review, reject-never-learns, group approve blanks-only, bulk-recode protection, client isolation + migration, learned-memory mode, strict-mode purity, reset/export regression locks |
 | **UI e2e** | `tests/test_e2e_v22.py` | headless `AppTest`: landing → load sample → spreadsheet → full run → filters/pagination → modal panels → export modal → undo |
+| **Review inbox** | `tests/test_review_inbox.py` | Keep / Not this from the Review page with no spreadsheet `_select`; reject never learns; seeds sacred |
+| **Review inbox e2e** | `tests/test_review_inbox_e2e.py` | headless `AppTest` on the inbox itself: renders after Strict and with the leftover table shown, "Queue is clear", Keep codes + learns, Not this leaves blank and never learns, coded rows survive a pile Keep, split piles refuse one-click Keep, "Always code this vendor" does not raise |
+| **Ingest profiles** | `tests/test_ingest_profiles.py` | AppFolio / QuickBooks detection, append dedupe, append never overwrites, Notes never mined |
+| **Insights** | `tests/test_insights.py` | read-only cards; never writes `New Account`; survives a missing Amount column |
+| **Live instance** | `tests/test_live_session.py` | password gate, fail-closed data dir, workspace save/resume, Start fresh is session-only, live wins over demo, durable client name, row cap refuses instead of truncating |
+| **Demo reset** | `tests/test_demo_reset.py` | the demo wipe stays on demo and can never run on live |
 
-> `tests/test_e2e_v22.py` and the bootstrap honour `FILLDOWN_DB_PATH`, so tests
+> The e2e modules and the bootstrap honour `FILLDOWN_DB_PATH`, so tests
 > use a throwaway SQLite file and never touch the shipped `data/fill_down.db`.
 
 Expected result: **all tests pass** and `smoke_test.py` prints
@@ -68,14 +74,22 @@ Launch with `streamlit run main.py`. Tip: use a clean DB with
 4. Click **Full Intelligent Run**. ✅ Codes fill in; **Confidence** bars and
    **How decided** appear; rows whose nearest seeds disagree land in review
    instead of being silently filled.
-5. **Review workspace** (sidebar → Review). ✅ Only flagged rows, least
-   confident first. Similarity groups show "Group #n · rows · suggested code";
-   one click approves a consensus group (split groups refuse). Bulk bar:
-   approve all visible, approve ≥ confidence slider, apply suggested / recode
-   / reject selected. Editing codes + ticking Approve, then one **Apply
-   approved** click, batches the whole table.
+5. **Review inbox** (sidebar → Review, or the CTA after a run). ✅ Three verbs
+   on one card — **Keep** the suggestion, **Fix** it by typing an account, or
+   **Not this**. Least-sure first. Look-alike piles offer one-click Keep or
+   Not this for the whole pile; a pile whose rows disagree refuses one-click
+   Keep. Keep and Fix are remembered for this client; **Not this never
+   learns** — it blocks that pairing and leaves the row blank. Already-coded
+   rows inside a pile are protected, never overwritten. When nothing is left,
+   the page says **"Queue is clear"** and offers Export.
+   After a Strict run there are no suggestions to Keep, so the queue is blank
+   rows: turn on **"no suggestion yet"** (or use the "Review N blank rows →"
+   CTA) and Fix them from the same card.
+   The leftover table is optional — above 20 leftovers it is off by default so
+   the next-leftover path stays fast; toggle it on to tick Keep/Pick in bulk.
 6. Tick a few **✓** boxes in the grid → **Approve Selected**. ✅ Rows resolve;
    a toast reports "Approved N · learned N · queued for next model train".
+   This is a bulk shortcut only — Review decisions never require it.
 7. **✨ Create Rule from Selection** (select a vendor's rows first). ✅ Keyword +
    Rule Notes pre-fill; the live preview shows *blank* fills vs already-coded
    matches separately; a rule that fills 0 blank rows needs explicit
@@ -133,9 +147,11 @@ browser open on the dashboard, sidebar visible.
    transactions and filled the **Target Account** codes — with a confidence bar
    and a plain-English reason on every row."
 4. **Stay in control (45s).** Sidebar → **Review**. "It only asks about what
-   it's unsure of — least confident first, grouped." Approve a whole group in
-   one click; fix one code by typing it. "Notice 'Examples learned' just went
-   up — it's getting smarter."
+   it's unsure of — least sure first, and look-alikes are stacked into one
+   pile." **Keep** a whole pile in one click; **Fix** one by typing the
+   account; **Not this** on one you disagree with. "Notice 'Examples learned'
+   just went up — it's getting smarter. And 'Not this' is never learned from,
+   so a wrong guess can't teach it the wrong thing."
 5. **Teach a rule (45s).** Select a vendor's rows → **✨ Create Rule from
    Selection**. "Pre-filled keyword, and a **live preview**: this rule will
    touch *N* rows." Save. "That rule is now permanent for every future file."

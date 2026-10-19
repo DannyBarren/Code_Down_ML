@@ -2,6 +2,9 @@
 
 Decision priority (highest wins):
     1. Existing seed value in the upload   -> kept as-is.
+    1b. Collision gate: a vendor (Name, else Memo) that codes to 2+ accounts
+        is never auto-filled by rules / similarity / ML -> Review (only an
+        exact signature the accountant already decided may fill).
     2. A matching user keyword rule         -> deterministic, very high confidence.
     3. A previously-approved learned mapping (exact text signature).
     4. A high-confidence **ML** prediction  -> only when a model is trained and
@@ -31,7 +34,12 @@ from models.schemas import (
 )
 from src.config import Config
 from src.data_loader import SIM_TEXT_COL, LoadedData, _has_value
-from src.rules_manager import RulesManager
+from src.rules_manager import (
+    COLLISION_ENGINE,
+    RulesManager,
+    collision_key_for_row,
+    collision_rationale,
+)
 from src.similarity import Embedder, cosine_sim_matrix, group_transactions
 from utils.account_codes import normalize_code
 from utils.logging_setup import get_logger
@@ -83,6 +91,7 @@ class FillDownEngine:
         client_id: Optional[str] = None,
         blocked_lookup: Optional[Dict[str, set]] = None,
         fallback_model_manager=None,
+        collision_lookup: Optional[Dict[str, set]] = None,
     ):
         self.config = config
         self.rules = rules_manager
@@ -95,7 +104,25 @@ class FillDownEngine:
         self.fallback_model_manager = fallback_model_manager
         # signature -> set of account codes the user has rejected for it.
         self.blocked_lookup = blocked_lookup or {}
+        # Vendor/memo keys that code to 2+ accounts for this client. ``None``
+        # means "ask storage"; a dict (even empty) is used as given.
+        self.collision_lookup = collision_lookup
         self._insight_cache: Dict[str, str] = {}
+
+    def _collisions_for(self, df: pd.DataFrame) -> Dict[str, set]:
+        """Stored collisions plus the ones inside this book (never raises)."""
+        try:
+            name_col, memo_col = self.rules.resolve_name_memo_columns(df.columns)
+            if self.collision_lookup is None:
+                return self.rules.collision_lookup(
+                    df, client_id=self.client_id, name_col=name_col,
+                    memo_col=memo_col)
+            from src.rules_manager import detect_collisions
+            return detect_collisions(df, name_col, memo_col,
+                                     seed=self.collision_lookup)
+        except Exception as exc:  # noqa: BLE001 - collisions must not break a run
+            logger.warning("collision_lookup_failed", error=str(exc))
+            return dict(self.collision_lookup or {})
 
     # --------------------------------------------------------- mode resolve
     def _any_model(self) -> bool:
@@ -198,6 +225,11 @@ class FillDownEngine:
                                              client_id=self.client_id)
         results: List[FillResult] = []
 
+        # Collision gate: a vendor (Name, else Memo) that codes to more than
+        # one account is never auto-filled by any engine — it goes to Review.
+        collisions = self._collisions_for(df)
+        name_col, memo_col = self.rules.resolve_name_memo_columns(df.columns)
+
         # Precompute similarity of every row to every seed row (if any seeds).
         sim_to_seeds = None
         if len(seed_indices) > 0 and embeddings.shape[0] == n:
@@ -221,6 +253,29 @@ class FillDownEngine:
                     rationale="Value already present in upload (seed).",
                 ))
                 continue
+
+            # 1b) Collision: this vendor codes two ways. Nothing fills it —
+            #     no rule, no learned memory, no similarity, no ML, not at
+            #     0.99. It escalates to Review so she decides.
+            if collisions:
+                key = collision_key_for_row(row, name_col, memo_col)
+                if key and key in collisions:
+                    why = collision_rationale(collisions[key])
+                    remembered = self.learned_lookup.get(text)
+                    code = normalize_code(remembered) if remembered else ""
+                    if code and code not in self.blocked_lookup.get(text, set()):
+                        # Context only — a prior decision on this exact row is
+                        # worth showing, but it still does not fill the cell.
+                        why += (f" You coded this exact transaction '{code}' "
+                                "before.")
+                    results.append(FillResult(
+                        row_index=i, original_value="", proposed_value=None,
+                        confidence=0.0, source=FillSource.NONE,
+                        engine_used=COLLISION_ENGINE,
+                        action=FillAction.NEEDS_REVIEW, group_id=group_id,
+                        rationale=why,
+                    ))
+                    continue
 
             # 2) Keyword rule.
             match = self.rules.match_row(text, row=row, rules=active_rules)
@@ -323,7 +378,8 @@ class FillDownEngine:
         if rules is None:
             rules = self.rules.list_rules(enabled_only=True, client_id=client_id)
         out_df, results = self.rules.apply_rules_to_dataframe(
-            df, rules=rules, text_columns=text_columns)
+            df, rules=rules, text_columns=text_columns, client_id=client_id,
+            collisions=self._collisions_for(df))
         # Reinforce + explain using the account knowledge base (best-effort).
         try:
             self.rules.reinforce_from_rule_run(

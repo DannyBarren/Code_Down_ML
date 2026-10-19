@@ -381,3 +381,103 @@ def list_excel_sheets(file: Union[str, Path, io.BytesIO, bytes]) -> List[str]:
         return pd.ExcelFile(io.BytesIO(raw)).sheet_names
     except Exception:  # noqa: BLE001
         return []
+
+
+# --------------------------------------------------------------------------- #
+# Which tab is the transaction detail?
+# --------------------------------------------------------------------------- #
+# Header roles a transaction sheet must show (first row only). Vendor / memo
+# text plus an amount or a date — a summary / chart-of-accounts tab has neither
+# a vendor column nor per-row amounts with dates.
+_SHEET_TEXT_HEADERS = ("name", "payee", "vendor", "memo", "memo/description",
+                       "memo / description", "description")
+_SHEET_MONEY_HEADERS = ("amount", "amount (usd)", "debit", "credit", "total")
+_SHEET_DATE_HEADERS = ("date", "txn date", "transaction date", "posting date")
+
+
+def sheet_headers(file: Union[str, Path, io.BytesIO, bytes],
+                  sheets: Optional[List[str]] = None) -> Dict[str, List[str]]:
+    """First-row headers of each sheet (``{sheet: [headers]}``).
+
+    Reads only the header row of every tab, so this is cheap even on a big
+    workbook. Unreadable sheets map to an empty list; never raises.
+    """
+    out: Dict[str, List[str]] = {}
+    try:
+        if isinstance(file, (str, Path)):
+            book = pd.ExcelFile(file)
+        else:
+            raw = file.read() if hasattr(file, "read") else file
+            book = pd.ExcelFile(io.BytesIO(raw))
+    except Exception:  # noqa: BLE001
+        return out
+    names = list(sheets) if sheets else list(book.sheet_names)
+    for name in names:
+        try:
+            head = book.parse(sheet_name=name, nrows=0)
+            out[name] = [str(c).strip() for c in head.columns]
+        except Exception:  # noqa: BLE001
+            out[name] = []
+    return out
+
+
+def score_transaction_headers(headers: List[str]) -> int:
+    """How much a header row looks like a transaction detail.
+
+    ``3`` — a known export shape (AppFolio / QuickBooks) won detection;
+    ``2`` — Name/Payee/Memo plus Amount/Date are present;
+    ``0`` — anything else (summary, chart of accounts, notes...).
+    """
+    from src.ingest_profiles import detect_profile
+
+    if not headers:
+        return 0
+    if detect_profile(headers) is not None:
+        return 3
+    norm = {str(h).strip().lower() for h in headers}
+    has_text = any(h in norm for h in _SHEET_TEXT_HEADERS)
+    has_money_or_date = any(h in norm for h in _SHEET_MONEY_HEADERS) \
+        or any(h in norm for h in _SHEET_DATE_HEADERS)
+    return 2 if (has_text and has_money_or_date) else 0
+
+
+def recommend_transaction_sheet(
+    file: Union[str, Path, io.BytesIO, bytes],
+    sheets: Optional[List[str]] = None,
+) -> Dict[str, object]:
+    """Pick the tab that holds the transactions — or say it is ambiguous.
+
+    Returns ``{"sheet", "index", "data_sheets", "scores", "reason"}``.
+    ``sheet`` / ``index`` are ``None`` when no tab looks like transaction
+    detail, or when two or more tabs look equally like it — the caller must
+    then keep the picker visible and must **not** load the first tab just
+    because it is first. A single-sheet workbook always recommends that sheet.
+    """
+    headers = sheet_headers(file, sheets)
+    names = list(sheets) if sheets else list(headers)
+    if not names:
+        return {"sheet": None, "index": None, "data_sheets": [],
+                "scores": {}, "reason": "no sheets"}
+    if len(names) == 1:
+        return {"sheet": names[0], "index": 0, "data_sheets": list(names),
+                "scores": {names[0]: score_transaction_headers(
+                    headers.get(names[0], []))},
+                "reason": "only sheet"}
+
+    scores = {n: score_transaction_headers(headers.get(n, [])) for n in names}
+    data_sheets = [n for n in names if scores[n] > 0]
+    if not data_sheets:
+        return {"sheet": None, "index": None, "data_sheets": [],
+                "scores": scores,
+                "reason": "no sheet looks like transaction detail"}
+    best = max(scores[n] for n in data_sheets)
+    top = [n for n in data_sheets if scores[n] == best]
+    if len(top) != 1:
+        return {"sheet": None, "index": None, "data_sheets": data_sheets,
+                "scores": scores,
+                "reason": f"{len(top)} sheets look like transactions"}
+    pick = top[0]
+    return {"sheet": pick, "index": names.index(pick),
+            "data_sheets": data_sheets, "scores": scores,
+            "reason": ("known export shape" if best == 3
+                       else "vendor/memo plus amount/date headers")}

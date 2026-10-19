@@ -196,7 +196,9 @@ adjustable from the sidebar's **Advanced tuning** section.
 
 Runtime data (SQLite DB, trained models, caches, logs) goes under a writable
 data directory: `FILLDOWN_DATA_DIR` if set, else `./data/`, else a temp dir.
-The app never crashes on a read-only filesystem.
+The app never crashes on a read-only filesystem. A hosted **live** instance
+(`FILLDOWN_LIVE=1`) is the exception: if the configured dir is not writable it
+fails visibly instead of falling through to `/tmp`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -204,9 +206,11 @@ The app never crashes on a read-only filesystem.
 | `FILLDOWN_DB_PATH` | under data dir | Override the SQLite DB path (used by tests). |
 | `FILLDOWN_DEMO` | `0` | `1` enables public-demo behavior (banner, sample auto-load, fresh-state reset). |
 | `FILLDOWN_DEMO_RESET` | `1` in demo | `0` keeps data across restarts in demo mode. |
+| `FILLDOWN_LIVE` | `0` | `1` enables the hosted client instance (auth, persist workbook, never auto-wipe). |
+| `FILLDOWN_AUTH_PASSWORD` | unset | Shared password. Required when `FILLDOWN_LIVE=1`; ignored locally. |
 | `FILLDOWN_MAX_ROWS` | `0` | Soft per-upload row cap (`0` = unlimited). |
 
-There is no authentication gate. The app opens straight to the dashboard.
+Locally there is no authentication gate. The app opens straight to the dashboard.
 
 ---
 
@@ -219,7 +223,17 @@ docker run -p 8501:8501 code-down-ml
 
 The image builds on the core requirements (TF-IDF + LogReg), exposes port 8501,
 and sets `FILLDOWN_DEMO=1` with the data dir at `/data` — mount a volume there
-to persist rules and learning.
+to persist rules and learning. That image is the **public demo**. It auto-loads
+the sample dataset and can wipe the knowledge base on start. Do not hand it to
+a client.
+
+### Hosted client instance (Railway)
+
+For a password-gated instance whose rules, approvals, **and last coded
+workbook** survive restarts and deploys, see
+**[docs/RAILWAY.md](docs/RAILWAY.md)**. That path uses `Dockerfile.railway`
+(`FILLDOWN_LIVE=1`), mounts a volume at `/data`, and never auto-wipes client
+data.
 
 ---
 
@@ -233,7 +247,10 @@ code_down_ML/
 ├── requirements.txt            # core engine (lightweight)
 ├── requirements-semantic.txt   # optional semantic AI + SetFit
 ├── pyproject.toml              # packaging + pytest config
-├── Dockerfile                  # container build (port 8501)
+├── Dockerfile                  # HF public-demo image (FILLDOWN_DEMO=1)
+├── Dockerfile.railway          # hosted client instance (FILLDOWN_LIVE=1)
+├── railway.toml                # Railway build → Dockerfile.railway
+├── docs/RAILWAY.md             # operator steps for the live instance
 ├── .streamlit/config.toml      # theme + server settings
 ├── src/                        # engines and business logic
 │   ├── config.py               #   typed config, env vars, data-dir selection
@@ -256,11 +273,13 @@ code_down_ML/
 │   ├── panels.py               #   Rules / Models / History modals
 │   ├── rule_creation.py        #   rule builder dialog + suggestion banners
 │   ├── sidebar.py              #   nav, engine status, advanced tuning
-│   ├── common.py               #   bootstrap, session state, demo mode, CSS
+│   ├── common.py               #   bootstrap, session state, demo/live mode, CSS
+│   ├── live_gate.py            #   shared-password gate (live only)
 │   ├── setup.py                #   dependency installer screens
 │   └── guide.py                #   in-app user guide
 ├── utils/
 │   ├── storage.py              #   SQLite: rules, memory, notes, training, runs
+│   ├── session_store.py        #   live workbook persistence (off unless live)
 │   ├── account_codes.py        #   account-code parsing and normalization
 │   ├── sample_data.py          #   neutral sample dataset generator
 │   ├── demo_utils.py           #   demo-mode data reset

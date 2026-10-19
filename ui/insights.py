@@ -27,7 +27,7 @@ def render_insights() -> None:
             st.rerun()
         return
 
-    client = st.session_state.get("client_name") or ""
+    client = common.current_client_id() or ""
     head = st.columns([3.4, 2])
     head[0].markdown("### Insights" + (f" — {client}" if client else ""))
     head[0].caption(f"{loaded.source_name} · read-only · computed from the "
