@@ -288,7 +288,7 @@ def test_string_dtype_columns_are_handled(rules):
 
 
 # --------------------------------------------------------------------------- #
-# Field scoping robustness + audit visibility (the Acme Paper bug)
+# Field scoping robustness + audit visibility (the Acme Paper Co case)
 # --------------------------------------------------------------------------- #
 def test_field_scoping_tolerates_messy_column_names(rules):
     """A rule scoped to 'memo / description' still matches column 'Memo/Description'."""
@@ -334,10 +334,10 @@ def test_protected_row_reports_matched_rule(rules):
 
 
 def test_acme_paper_exact_rules_scenario(config, rules, storage):
-    """Reproduce the client's exact rules on a sanitized fixture.
+    """Reproduce exact rules on a sanitized fixture.
 
     ``tests/fixtures/acme_paper_like.csv`` is synthetic (fictional vendors) but
-    keeps the real file's invariants: 187 pre-filled rows, and enough Fabrikam
+    keeps the file's invariants: 187 pre-filled rows, and enough Fabrikam
     Media / Rent Signage rows that the rules provably fire on protected
     rows. All rows containing the phrases are already coded, so nothing is
     filled — but the rules must be shown to *match* those protected rows, and
