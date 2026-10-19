@@ -6,12 +6,16 @@
 #   * similarity falls back to TF-IDF
 #   * the ML layer falls back to the built-in Logistic Regression baseline
 #     (SetFit is skipped when not installed)
+#
+# Pinned 2026-10-19 to versions compatible with the transformers 4.x pin
+# below. These packages are NOT installed in CI and were not exercised in
+# the verification pass — semantic / SetFit metrics: not measured.
 
-sentence-transformers>=2.5.0
-torch>=2.5.0
+sentence-transformers==3.4.1
+torch==2.5.1
 
 # Optional, more powerful trainable model (few-shot). Needs the torch stack above.
-setfit>=1.0.0
+setfit==1.1.3
 
 # Pin the Hugging Face transformers major version: setfit (and older
 # sentence-transformers) rely on APIs that were removed in transformers 5.x,
