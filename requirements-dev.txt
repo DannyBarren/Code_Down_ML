@@ -1,0 +1,6 @@
+# Dev / CI extras. Install with:
+#     pip install -r requirements-dev.txt
+#
+# pytest is pinned to the version used in the 2026-10-19 verification pass.
+-r requirements.txt
+pytest==9.1.1

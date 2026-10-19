@@ -174,17 +174,17 @@ def _stream_command(cmd: List[str]) -> Iterator[str]:
 # Version floors (mirrors requirements*.txt) applied only when a package is
 # actually missing, so we never churn / upgrade already-working packages.
 _VERSION_SPEC = {
-    "pandas": "pandas>=2.1.0",
-    "numpy": "numpy>=1.26.0",
-    "openpyxl": "openpyxl>=3.1.2",
-    "streamlit": "streamlit>=1.32.0",
-    "pydantic": "pydantic>=2.6.0",
-    "PyYAML": "PyYAML>=6.0.1",
-    "structlog": "structlog>=24.1.0",
-    "scikit-learn": "scikit-learn>=1.4.0",
-    "sentence-transformers": "sentence-transformers>=2.5.0",
-    "torch": "torch>=2.5.0",
-    "setfit": "setfit>=1.0.0",
+    "pandas": "pandas==3.0.6",
+    "numpy": "numpy==2.4.6",
+    "openpyxl": "openpyxl==3.1.5",
+    "streamlit": "streamlit==1.66.0",
+    "pydantic": "pydantic==2.14.1",
+    "PyYAML": "PyYAML==6.0.3",
+    "structlog": "structlog==26.1.0",
+    "scikit-learn": "scikit-learn==1.9.1",
+    "sentence-transformers": "sentence-transformers==3.4.1",
+    "torch": "torch==2.5.1",
+    "setfit": "setfit==1.1.3",
 }
 
 # transformers 5.x dropped APIs that SetFit still uses; pin to the 4.x line. This

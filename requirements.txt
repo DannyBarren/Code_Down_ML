@@ -1,25 +1,29 @@
 # =============================================================================
 # Core dependencies – everything the app needs to run with the fast,
 # built-in TF-IDF matcher. Light and quick to install.
+#
+# Pinned 2026-10-19. Exact versions were installed and verified with
+# `pytest` + `python smoke_test.py`. Pins have Python 3.11 wheels so GitHub
+# Actions (python-version: "3.11") and local 3.12 both resolve.
 # =============================================================================
 
 # Data handling
-pandas>=2.1.0
-numpy>=1.26.0
-openpyxl>=3.1.2
+pandas==3.0.6
+numpy==2.4.6
+openpyxl==3.1.5
 
 # UI
-streamlit>=1.32.0
+streamlit==1.66.0
 
 # Config & data models
-pydantic>=2.6.0
-PyYAML>=6.0.1
+pydantic==2.14.1
+PyYAML==6.0.3
 
 # Logging
-structlog>=24.1.0
+structlog==26.1.0
 
 # Machine learning / similarity (TF-IDF + clustering)
-scikit-learn>=1.4.0
+scikit-learn==1.9.1
 
 # -----------------------------------------------------------------------------
 # OPTIONAL: semantic AI matching (best accuracy). Heavier download (~hundreds

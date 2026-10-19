@@ -13,6 +13,58 @@ Runs locally. No login. No external service required.
 
 ---
 
+## The problem
+
+Property managers and bookkeepers spend hours every month coding AppFolio,
+QuickBooks, and spreadsheet exports onto a chart of accounts. The work is
+repetitive, but it is not "train a model and walk away":
+
+- Rows the accountant already coded are **ground truth**. Overwriting them is a
+  defect, not a feature.
+- A vendor that posts to two accounts is a **collision**, not a coin-flip.
+- The next file should get faster because last month's approvals stuck — without
+  leaking Client A's memory into Client B's book.
+- A fill with no *why* will not survive an audit.
+
+Code_Down_ML is a local, spreadsheet-first cascade: deterministic keyword rules,
+then exact learned memory, then similarity, then optional ML. Uncertain rows
+go to a human. Approvals write memory. The coded book is the product.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TB
+    Upload["Upload CSV / Excel<br/>AppFolio or QuickBooks shape"] --> Loader["data_loader<br/>normalize headers, protect seeds"]
+    Loader --> WorkDF["work_df spreadsheet"]
+    WorkDF --> Modes{"Run mode"}
+    Modes -->|"Strict ★"| RulesOnly["Keyword rules only"]
+    Modes -->|"Rules + Memory"| RulesMem["Rules, then exact learned mappings"]
+    Modes -->|"Rules + Similarity"| Hybrid["Rules, then TF-IDF / embeddings"]
+    Modes -->|"Full Intelligent"| Cascade["Rules → memory → similarity → ML"]
+    RulesOnly --> Gate["Confidence gate<br/>auto ≥ 0.85 · review ≥ 0.55"]
+    RulesMem --> Gate
+    Hybrid --> Gate
+    Cascade --> Gate
+    Gate -->|auto-filled| Grid["Spreadsheet grid"]
+    Gate -->|uncertain| Review["Review workspace"]
+    Review -->|approve / recode / reject| Learn["record_human_approval"]
+    Learn --> SQLite[("SQLite: rules, mappings,<br/>training_data, profiles")]
+    Learn --> Models["Per-client LogReg / optional SetFit"]
+    SQLite --> Cascade
+    Models --> Cascade
+    Grid --> Export["Excel / CSV export<br/>New Account only"]
+    Grid --> Insights["Insights — read-only coaching metrics"]
+```
+
+Entry point is `main.py` (Streamlit). Engines and storage live under `src/` and
+`utils/` with no Streamlit imports, so the same cascade is what `pytest` and
+`python smoke_test.py` exercise. Runtime artifacts (SQLite, models, logs) stay
+under `FILLDOWN_DATA_DIR` and are gitignored.
+
+---
+
 ## How a row gets a code
 
 For each blank row, the engine walks a layered cascade and stops at the first
@@ -88,7 +140,22 @@ and shifts toward the trained model as approvals accumulate (thresholds in
 
 ---
 
-## Quick start
+## Design trade-offs
+
+| Choice | What we took | What we gave up |
+| --- | --- | --- |
+| **Strict-first run modes** | Accountants can fill nothing a rule didn't match | Coverage requires writing (or ingesting) rules |
+| **Never overwrite seeds** | Uploaded codes stay sacred in every mode | The engine cannot "fix" a bad seed for you |
+| **TF-IDF as the default** | `pip install` stays small; CI stays fast; no model download | Spelling and paraphrase misses that embeddings would catch |
+| **Optional semantic / SetFit** | Best-accuracy path exists without forcing torch on every install | Those engines are not in CI; their accuracy is **not measured** here |
+| **Client-scoped SQLite + models** | Switching the dashboard client name isolates memory | This is a single-user local app, not a multi-tenant service |
+| **Confidence cutoffs 0.85 / 0.55** | High-confidence auto-fill, everything else is review | Tunable, but defaults are conservative on purpose |
+| **No auth on this branch** | Clone and run | Do not put it on a public URL as-is (see `demo/railway-live` for a gated live mode) |
+| **File ingest, no live GL APIs** | Works on an export you already have | No AppFolio / QuickBooks sync |
+
+---
+
+## How to run
 
 Requires **Python 3.11+**.
 
@@ -99,7 +166,7 @@ cd Code_Down_ML
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 
-pip install -r requirements.txt    # core engine
+pip install -r requirements.txt    # core engine (pinned)
 # optional, heavier: semantic matching + SetFit
 # pip install -r requirements-semantic.txt
 
@@ -115,6 +182,17 @@ can then be picked up with **Full Intelligent Run** and finished in the
 `python main.py` also works — it relaunches itself under Streamlit. If core
 packages are missing, the app shows a setup screen with a one-click installer
 instead of crashing.
+
+Environment variables are listed in [`.env.example`](.env.example). The app
+reads the process environment; it does not load a `.env` file automatically.
+
+```bash
+# throwaway database (keeps shipped data/ clean)
+FILLDOWN_DB_PATH=/tmp/demo.db streamlit run main.py
+
+# public-demo mode (banner + optional wipe on start — not for real books)
+FILLDOWN_DEMO=1 streamlit run main.py
+```
 
 ---
 
@@ -198,6 +276,8 @@ Runtime data (SQLite DB, trained models, caches, logs) goes under a writable
 data directory: `FILLDOWN_DATA_DIR` if set, else `./data/`, else a temp dir.
 The app never crashes on a read-only filesystem.
 
+See [`.env.example`](.env.example) for the full list. The ones operators set:
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `FILLDOWN_DATA_DIR` | `data/` | Writable root for DB / models / logs. |
@@ -230,9 +310,11 @@ code_down_ML/
 ├── main.py                     # Streamlit entry point (thin router)
 ├── cli.py                      # `code-down` console script (pip install -e .)
 ├── config.yaml                 # thresholds + column mapping
-├── requirements.txt            # core engine (lightweight)
+├── requirements.txt            # core engine, pinned
+├── requirements-dev.txt        # core + pytest (what CI installs)
 ├── requirements-semantic.txt   # optional semantic AI + SetFit
 ├── pyproject.toml              # packaging + pytest config
+├── .env.example                # documented environment variables
 ├── Dockerfile                  # container build (port 8501)
 ├── .streamlit/config.toml      # theme + server settings
 ├── src/                        # engines and business logic
@@ -275,6 +357,7 @@ code_down_ML/
 ## Testing
 
 ```bash
+pip install -r requirements-dev.txt
 pytest                   # unit + integration + headless UI tests
 python smoke_test.py     # end-to-end smoke test without Streamlit
 ```
@@ -283,6 +366,49 @@ The suite covers the data loader, rules and matching, the decision cascade, the
 ML layer, review and export, the spreadsheet helpers, and end-to-end UI flows
 via Streamlit's `AppTest`. Tests use a throwaway SQLite database
 (`FILLDOWN_DB_PATH`) and never touch shipped data.
+
+---
+
+## Measured results
+
+Numbers below come from commands run in this repo on **2026-10-19** (Python
+3.12.3, pinned core stack: pandas 3.0.6, numpy 2.4.6, scikit-learn 1.9.1,
+streamlit 1.66.0). Anything not produced by those commands is marked
+**not measured**.
+
+| Metric | Result | Command |
+| --- | --- | --- |
+| Pytest (unit + integration + headless AppTest) | **224 passed in 10.80s** | `pytest` |
+| Smoke test (no Streamlit) | **all checks passed** | `python smoke_test.py` |
+| Neutral sample ledger, Full Intelligent, TF-IDF, default example rules only | 220 rows · 16 groups · **142 auto-filled** · 0 filled-for-review · 0 needs-review · **68 left blank** (10 rows were already seeded; 142/210 blanks filled) | `python smoke_test.py` (sample workflow on `data/sample_transactions.xlsx`) |
+| Precision / recall / F1 vs a labeled production ledger | **not measured** | — |
+| Held-out LogReg / SetFit accuracy | **not measured** | tests assert class identity on synthetic data; they do not record a score |
+| Semantic embeddings / SetFit | **not measured** | optional stack is not installed in CI |
+
+These sample-file counts are **coverage on a fictional 220-row book**, not
+accuracy. Default example rules (`Cloud Hosting`, `SaaS Tools`) plus TF-IDF
+similarity from the 10 seeded rows produced the 142 auto-fills. Do not read
+that as production quality.
+
+---
+
+## Known limitations
+
+- **No authentication** on this branch. Fine for local use; not a public SaaS.
+- **Single-user SQLite.** No concurrent writers, no hosted multi-tenant ACL.
+- **Optional semantic / SetFit** are heavier, not in CI, and unmeasured here.
+- **TF-IDF is n-gram based.** Vendor typos and paraphrase often need a keyword
+  rule or the optional embedding backend.
+- **Similarity needs seeds or rule-fills.** A file with no coded rows and no
+  matching rules stays mostly blank — by design.
+- **No live accounting APIs.** AppFolio / QuickBooks are ingest *shapes*, not
+  connectors. Insights are read-only over the file you uploaded.
+- **Excel export writes `New Account` (plus a summary tab).** Other sheets and
+  formatting are preserved; the engine does not rewrite the rest of the book.
+- **`FILLDOWN_DEMO=1` can wipe the knowledge base on start.** Do not enable
+  demo reset against a real client's SQLite file.
+- **Published accuracy on real client ledgers is intentionally absent.** Client
+  books stay out of git.
 
 ---
 
